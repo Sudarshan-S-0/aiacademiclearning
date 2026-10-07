@@ -288,12 +288,19 @@ def student_progress(db:Session=Depends(get_db),u=Depends(require_roles("STUDENT
     return [{"id":x.id,"subject_id":x.subject_id,"topic_id":x.topic_id,"activity":x.activity_type,"score":x.score,"max_score":x.max_score,"completed":x.completed} for x in db.scalars(select(Progress).where(Progress.student_id==u.id).order_by(Progress.id.desc())).all()]
 @router.get("/student/weak-topics")
 def weak_topics(db:Session=Depends(get_db),u=Depends(require_roles("STUDENT"))):
-    rows=db.execute(select(Progress,Topic).join(Topic,Topic.id==Progress.topic_id).where(Progress.student_id==u.id,Progress.topic_id.is_not(None))).all();agg={}
+    rows=db.execute(select(Progress,Topic).join(Topic,Topic.id==Progress.topic_id).where(Progress.student_id==u.id,Progress.topic_id.is_not(None))).all()
+    agg={}
     for p,t in rows:
-        d=agg.setdefault(t.id,{"topic_id":t.id,"topic":t.topic_name,"score":0,"max":0});d["score"]+=p.score;d["max"]+=p.max_score
+        d=agg.setdefault(t.id,{"topic_id":t.id,"topic":t.topic_name,"score":0,"max":0})
+        d["score"]+=p.score;d["max"]+=p.max_score
     out=[]
-    for d in agg.values():d["percentage"]=round(d["score"]*100/d["max"],2) if d["max"] else 0;out.append(d)
+    for d in agg.values():
+        d["percentage"]=round(d["score"]*100/d["max"],2) if d["max"] else 0
+        published=db.scalars(select(Content).where(Content.topic_id==d["topic_id"],Content.status=="PUBLISHED").order_by(Content.id.desc()).limit(3)).all()
+        d["recommendation"]="Revise: "+", ".join(x.title for x in published) if published else "Review the approved resources for this topic."
+        out.append(d)
     return sorted(out,key=lambda x:x["percentage"])
+
 @router.get("/audit")
 def audit_logs(db:Session=Depends(get_db),u=Depends(require_roles("ADMIN"))):
     return [{"id":x.id,"actor_id":x.actor_id,"action":x.action,"entity":x.entity_type,"entity_id":x.entity_id,"details":x.details,"created_at":x.created_at} for x in db.scalars(select(AuditLog).order_by(AuditLog.id.desc()).limit(300)).all()]
