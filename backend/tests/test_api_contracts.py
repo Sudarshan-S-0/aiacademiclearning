@@ -1,8 +1,20 @@
 from app.main import app
 
 
+def _registered_paths(routes):
+    paths = set()
+    for route in routes:
+        path = getattr(route, "path", None)
+        if path:
+            paths.add(path)
+        nested = getattr(route, "routes", None)
+        if nested:
+            paths.update(_registered_paths(nested))
+    return paths
+
+
 def test_extended_workflow_routes_are_registered():
-    paths = {route.path for route in app.routes}
+    paths = _registered_paths(app.routes)
     required = {
         "/api/departments",
         "/api/semesters",
