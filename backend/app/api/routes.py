@@ -150,7 +150,7 @@ def syllabus_versions(subject_id:int,db:Session=Depends(get_db),u=Depends(curren
 @router.post("/content")
 def create_content(p:ContentCreate,db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
-    x=Content(**p.model_dump(),status="IN_REVIEW");db.add(x);db.flush();audit(db,u,"CREATE_CONTENT","CONTENT",x.id);db.commit();return {"id":x.id,"status":x.status}
+    x=Content(**p.model_dump(),status="IN_REVIEW",created_by=u.id);db.add(x);db.flush();audit(db,u,"CREATE_CONTENT","CONTENT",x.id);db.commit();return {"id":x.id,"status":x.status}
 @router.get("/content")
 def list_content(subject_id:int,db:Session=Depends(get_db),u=Depends(current_user)):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
