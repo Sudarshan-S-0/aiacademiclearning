@@ -607,6 +607,15 @@ def student_analytics(db: Session = Depends(get_db), u=Depends(require_roles("ST
             "average_percentage": round(score * 100 / maximum, 2) if maximum else 0}
 
 
+@router.get("/student/resources")
+def student_resources(db: Session = Depends(get_db), u=Depends(require_roles("STUDENT"))):
+    ids = select(Enrollment.subject_id).where(Enrollment.student_id == u.id)
+    rows = db.scalars(select(Resource).where(Resource.subject_id.in_(ids), Resource.status == "APPROVED")
+                      .order_by(Resource.id.desc())).all()
+    return [{"id": r.id, "subject_id": r.subject_id, "title": r.title, "type": r.resource_type,
+             "version": r.version, "pages": r.page_count} for r in rows]
+
+
 @router.post("/quizzes/{quiz_id}/generate")
 def generate_quiz(quiz_id: int, db: Session = Depends(get_db), u=Depends(require_roles("ADMIN", "TEACHER"))):
     quiz = db.get(Quiz, quiz_id)
