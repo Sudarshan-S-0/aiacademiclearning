@@ -46,6 +46,11 @@ class GenerateRequest(BaseModel):
     instructions: str | None = None
 
 
+class GradeSubmission(BaseModel):
+    score: float
+    feedback: str | None = None
+
+
 class DepartmentCreate(BaseModel):
     code: str
     name: str
@@ -544,6 +549,38 @@ def submit_assignment(p: AssignmentSubmit, db: Session = Depends(get_db), u=Depe
                     activity_type="ASSIGNMENT", score=0, max_score=1, completed=True))
     audit(db, u, "SUBMIT_ASSIGNMENT", "ASSIGNMENT", c.id); db.commit()
     return {"submission_id": s.id, "status": "SUBMITTED"}
+
+
+@router.get("/assignments/submissions/{content_id}")
+def assignment_submissions(content_id: int, db: Session = Depends(get_db), u=Depends(require_roles("ADMIN", "TEACHER"))):
+    content = db.get(Content, content_id)
+    if not content or content.content_type != "ASSIGNMENT" or not can_access_subject(db, u, content.subject_id):
+        raise HTTPException(404, "Assignment not found")
+    rows = db.scalars(select(AssignmentSubmission).where(AssignmentSubmission.content_id == content_id)
+                      .order_by(AssignmentSubmission.id.desc())).all()
+    return [{"id": s.id, "student_id": s.student_id, "answer": s.answer_text,
+             "score": s.score, "feedback": s.feedback, "submitted_at": s.submitted_at} for s in rows]
+
+
+@router.patch("/assignments/submissions/{submission_id}/grade")
+def grade_assignment(submission_id: int, p: GradeSubmission, db: Session = Depends(get_db),
+                     u=Depends(require_roles("ADMIN", "TEACHER"))):
+    s = db.get(AssignmentSubmission, submission_id)
+    content = db.get(Content, s.content_id) if s else None
+    if not s or not content or not can_access_subject(db, u, content.subject_id):
+        raise HTTPException(404, "Submission not found")
+    if p.score < 0 or p.score > 100:
+        raise HTTPException(400, "Score must be between 0 and 100")
+    s.score, s.feedback = p.score, p.feedback
+    progress = db.scalar(select(Progress).where(
+        Progress.student_id == s.student_id, Progress.subject_id == content.subject_id,
+        Progress.topic_id == content.topic_id, Progress.activity_type == "ASSIGNMENT"
+    ).order_by(Progress.id.desc()))
+    if progress:
+        progress.score, progress.max_score = p.score, 100
+    audit(db, u, "GRADE_ASSIGNMENT", "ASSIGNMENT_SUBMISSION", s.id)
+    db.commit()
+    return {"id": s.id, "score": s.score, "feedback": s.feedback}
 
 
 @router.get("/analytics/teacher-v2/{subject_id}")
