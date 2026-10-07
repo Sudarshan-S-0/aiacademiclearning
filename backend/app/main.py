@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.db.session import Base,engine
 from app.api.routes import router
+from app.api.extended_routes import router as extended_router
 from app.models import models
 Base.metadata.create_all(bind=engine)
 
@@ -23,3 +24,4 @@ async def simple_rate_limit(request:Request,call_next):
     return await call_next(request)
 
 app.include_router(router)
+app.include_router(extended_router)
