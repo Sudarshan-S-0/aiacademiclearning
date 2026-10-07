@@ -50,13 +50,13 @@ def client():
 
     teacher = User(
         full_name="Test Teacher",
-        email="teacher@test.local",
+        email="teacher@example.com",
         password_hash=pwd.hash("Teacher@123"),
         role="TEACHER",
     )
     student = User(
         full_name="Test Student",
-        email="student@test.local",
+        email="student@example.com",
         password_hash=pwd.hash("Student@123"),
         role="STUDENT",
     )
@@ -125,7 +125,7 @@ def login(client, email, password):
 
 
 def test_student_sees_only_assigned_subjects_and_published_content(client):
-    headers = login(client, "student@test.local", "Student@123")
+    headers = login(client, "student@example.com", "Student@123")
 
     subjects = client.get("/api/subjects", headers=headers)
     assert subjects.status_code == 200
@@ -141,7 +141,7 @@ def test_student_sees_only_assigned_subjects_and_published_content(client):
 
 
 def test_student_cannot_access_unassigned_subject(client):
-    headers = login(client, "student@test.local", "Student@123")
+    headers = login(client, "student@example.com", "Student@123")
 
     response = client.get(
         "/api/content?subject_id=2",
@@ -151,7 +151,7 @@ def test_student_cannot_access_unassigned_subject(client):
 
 
 def test_teacher_cannot_access_unassigned_subject(client):
-    headers = login(client, "teacher@test.local", "Teacher@123")
+    headers = login(client, "teacher@example.com", "Teacher@123")
 
     response = client.get(
         "/api/subjects/2/topics",
