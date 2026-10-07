@@ -125,8 +125,13 @@ def login(client, email, password):
         "/api/auth/login",
         json={"email": email, "password": password},
     )
-    assert response.status_code == 200
-    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert "access_token" in data, response.text
+    headers = {"Authorization": f"Bearer {data["access_token"]}"}
+    me = client.get("/api/me", headers=headers)
+    assert me.status_code == 200, me.text
+    return headers
 
 
 def test_student_sees_only_assigned_subjects_and_published_content(client):
