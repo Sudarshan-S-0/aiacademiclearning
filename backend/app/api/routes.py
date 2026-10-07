@@ -128,7 +128,10 @@ def resource_status(resource_id:int,status:str=Query(...),db:Session=Depends(get
     x=db.get(Resource,resource_id)
     if not x or not can_access_subject(db,u,x.subject_id):raise HTTPException(404,"Resource not found")
     if status not in {"DRAFT","APPROVED","ARCHIVED"}:raise HTTPException(400,"Invalid resource status")
-    x.status=status;audit(db,u,f"RESOURCE_{status}","RESOURCE",x.id);db.commit();return {"id":x.id,"status":status}
+    x.status=status
+    from app.services.qdrant import set_resource_status
+    set_resource_status(x.id,status)
+    audit(db,u,f"RESOURCE_{status}","RESOURCE",x.id);db.commit();return {"id":x.id,"status":status}
 @router.get("/resources/{resource_id}/download")
 def download_resource(resource_id:int,db:Session=Depends(get_db),u=Depends(current_user)):
     from fastapi.responses import Response
