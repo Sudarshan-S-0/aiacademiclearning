@@ -1,35 +1,12 @@
 from app.main import app
 
 
-def _registered_paths(routes, seen=None):
-    seen = seen or set()
-    paths = set()
-
-    for route in routes:
-        marker = id(route)
-        if marker in seen:
-            continue
-        seen.add(marker)
-
-        path = getattr(route, "path", None) or getattr(route, "path_format", None)
-        if path:
-            paths.add(path)
-
-        nested = getattr(route, "routes", None)
-        if nested:
-            paths.update(_registered_paths(nested, seen))
-
-        nested_router = getattr(route, "router", None)
-        if nested_router is not None:
-            nested_routes = getattr(nested_router, "routes", None)
-            if nested_routes:
-                paths.update(_registered_paths(nested_routes, seen))
-
-    return paths
-
-
 def test_extended_workflow_routes_are_registered():
-    paths = _registered_paths(app.routes)
+    # FastAPI 0.137+ may keep included routers as lazy _IncludedRouter
+    # objects in app.routes. OpenAPI resolves that route tree to the
+    # effective application paths, so it is the correct public contract
+    # to test instead of assuming every app.routes item has .path.
+    paths = set(app.openapi().get("paths", {}))
     required = {
         "/api/departments",
         "/api/semesters",
@@ -40,7 +17,8 @@ def test_extended_workflow_routes_are_registered():
         "/api/assignments/submissions/{submission_id}/grade",
         "/api/ai/ask-v2",
     }
-    assert required.issubset(paths)
+    missing = required - paths
+    assert not missing, f"Missing registered API routes: {sorted(missing)}"
 
 
 def test_role_and_grounding_helpers_are_importable():
