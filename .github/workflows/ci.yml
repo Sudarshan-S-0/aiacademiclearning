@@ -34,7 +34,7 @@ jobs:
         working-directory: backend
         env:
           DATABASE_URL: postgresql+psycopg://academic:academic@localhost:5432/academic
-          JWT_SECRET: ci-test-secret
+          JWT_SECRET: ci-test-secret-0123456789-abcdef-123456
           CORS_ORIGINS: http://localhost:5173
           PYTHONPATH: .
         run: python -m pytest -q
