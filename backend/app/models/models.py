@@ -69,6 +69,7 @@ class Resource(Base):
     extracted_text:Mapped[str|None]=mapped_column(Text,nullable=True)
     page_count:Mapped[int]=mapped_column(Integer,default=0)
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now())
+    parent_resource_id:Mapped[int|None]=mapped_column(ForeignKey("resources.id"),nullable=True)
 class SyllabusVersion(Base):
     __tablename__="syllabus_versions"
     id:Mapped[int]=mapped_column(primary_key=True)
@@ -101,6 +102,7 @@ class PYQQuestion(Base):
     topic_id:Mapped[int|None]=mapped_column(ForeignKey("syllabus_topics.id"),nullable=True)
     unit_number:Mapped[int|None]=mapped_column(Integer,nullable=True)
     frequency_key:Mapped[str|None]=mapped_column(String(255),nullable=True)
+    mapping_confidence:Mapped[float|None]=mapped_column(Float,nullable=True)
 class TopicWeightage(Base):
     __tablename__="topic_weightage"
     id:Mapped[int]=mapped_column(primary_key=True)
@@ -132,6 +134,7 @@ class Content(Base):
     source_reference:Mapped[str|None]=mapped_column(String(1000),nullable=True)
     version:Mapped[int]=mapped_column(Integer,default=1)
     generated_by_ai:Mapped[bool]=mapped_column(Boolean,default=False)
+    created_by:Mapped[int|None]=mapped_column(ForeignKey("users.id"),nullable=True)
 class Quiz(Base):
     __tablename__="quizzes"
     id:Mapped[int]=mapped_column(primary_key=True)
