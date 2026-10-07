@@ -101,7 +101,7 @@ def generate_content(p:GenerateRequest,db:Session=Depends(get_db),u=Depends(requ
     data=generate_structured(p.content_type,p.title,topic.topic_name if topic else None,contexts,p.instructions or "")
     if not data:raise HTTPException(502,"AI generation failed")
     title=p.title or data.get("title") or p.content_type.title();body=body_from_generated(p.content_type,data)
-    c=Content(subject_id=p.subject_id,topic_id=p.topic_id,title=title,content_type=p.content_type.upper(),body=body,status="IN_REVIEW",source_reference="; ".join(x.get("citation","") for x in contexts),version=1,generated_by_ai=True,created_by=u.id)
+    c=Content(subject_id=p.subject_id,topic_id=p.topic_id,title=title,content_type=p.content_type.upper(),body=body,status="IN_REVIEW",source_reference="; ".join(x.get("citation","") for x in contexts),version=1,generated_by_ai=True)
     db.add(c);db.flush()
     used={x.get("resource_id") for x in contexts}
     for rid in used:
