@@ -128,7 +128,8 @@ def login(client, email, password):
     assert response.status_code == 200, response.text
     data = response.json()
     assert "access_token" in data, response.text
-    headers = {"Authorization": f"Bearer {data["access_token"]}"}
+    token = data["access_token"]
+            headers = {"Authorization": f"Bearer {token}"}
     me = client.get("/api/me", headers=headers)
     assert me.status_code == 200, me.text
     return headers
