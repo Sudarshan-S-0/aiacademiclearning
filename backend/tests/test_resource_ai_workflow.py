@@ -1,6 +1,8 @@
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+import os
+import tempfile
 from sqlalchemy.pool import StaticPool
 from app.main import app
 from app.db.session import Base,get_db
@@ -9,7 +11,8 @@ from app.api.routes import pwd
 import app.api.extended_routes as extended
 
 def test_resource_ai_publication_gates(monkeypatch):
-    engine=create_engine("sqlite:///:memory:",connect_args={"check_same_thread":False},poolclass=StaticPool)
+    db_path=tempfile.mktemp(suffix=".db")
+    engine=create_engine(f"sqlite:///{db_path}")
     Base.metadata.create_all(engine)
     SessionLocal=sessionmaker(bind=engine)
     db=SessionLocal()
@@ -51,3 +54,5 @@ def test_resource_ai_publication_gates(monkeypatch):
         visible=client.get(f"/api/content?subject_id={subject_id}",headers=sh)
         assert [x["title"] for x in visible.json()]==["Notes"]
     app.dependency_overrides.clear()
+    engine.dispose()
+    if os.path.exists(db_path): os.remove(db_path)
