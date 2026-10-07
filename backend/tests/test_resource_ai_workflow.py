@@ -38,7 +38,18 @@ def test_resource_ai_publication_gates(monkeypatch):
     monkeypatch.setattr(extended,"set_resource_status",lambda resource_id,status:True)
     monkeypatch.setattr(extended,"generate_structured",lambda *a,**k:{"title":"Generated Notes","sections":[{"heading":"AI","points":["Grounded point"]}]})
     with TestClient(app) as client:
-        login=lambda e,p:{"Authorization":"Bearer "+client.post("/api/auth/login",json={"email":e,"password":p}).json()["access_token"]}
+        def login(e, p):
+            response = client.post(
+                "/api/auth/login",
+                json={"email": e, "password": p},
+            )
+            assert response.status_code == 200, response.text
+            data = response.json()
+            assert "access_token" in data, response.text
+            headers = {"Authorization": f"Bearer {data["access_token"]}"}
+            me = client.get("/api/me", headers=headers)
+            assert me.status_code == 200, me.text
+            return headers
         th=login("wf.teacher@example.com","Teacher@123")
         blocked=client.post("/api/ai/generate",headers=th,json={"subject_id":subject_id,"content_type":"notes","title":"Notes"})
         assert blocked.status_code==409
