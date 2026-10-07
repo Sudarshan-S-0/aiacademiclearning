@@ -1,15 +1,30 @@
 from app.main import app
 
 
-def _registered_paths(routes):
+def _registered_paths(routes, seen=None):
+    seen = seen or set()
     paths = set()
+
     for route in routes:
-        path = getattr(route, "path", None)
+        marker = id(route)
+        if marker in seen:
+            continue
+        seen.add(marker)
+
+        path = getattr(route, "path", None) or getattr(route, "path_format", None)
         if path:
             paths.add(path)
+
         nested = getattr(route, "routes", None)
         if nested:
-            paths.update(_registered_paths(nested))
+            paths.update(_registered_paths(nested, seen))
+
+        nested_router = getattr(route, "router", None)
+        if nested_router is not None:
+            nested_routes = getattr(nested_router, "routes", None)
+            if nested_routes:
+                paths.update(_registered_paths(nested_routes, seen))
+
     return paths
 
 
