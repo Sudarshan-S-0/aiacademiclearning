@@ -31,7 +31,7 @@ class AttemptCreate(BaseModel): quiz_id:int;answers:list[Answer]
 class AIContentRequest(BaseModel): subject_id:int;topic_id:int|None=None;content_type:str;title:str|None=None;instructions:str|None=None
 class AIPlanRequest(BaseModel): subject_id:int
 class AskRequest(BaseModel): subject_id:int;question:str
-def token_for(u):return jwt.encode({"sub":u.id,"role":u.role,"exp":datetime.now(timezone.utc)+timedelta(hours=8)},settings.jwt_secret,algorithm="HS256")
+def token_for(u):return jwt.encode({"sub":str(u.id),"role":u.role,"exp":datetime.now(timezone.utc)+timedelta(hours=8)},settings.jwt_secret,algorithm="HS256")
 def current_user(authorization:str|None=Header(default=None),db:Session=Depends(get_db)):
     if not authorization or not authorization.startswith("Bearer "):raise HTTPException(401,"Authentication required")
     try:data=jwt.decode(authorization[7:],settings.jwt_secret,algorithms=["HS256"])
