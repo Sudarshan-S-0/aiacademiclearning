@@ -29,6 +29,8 @@ def upsert_chunks(resource_id,subject_id,chunks,source,status='DRAFT'):
     if not chunks or not ensure_collection():return False
     points=[]
     for i,c in enumerate(chunks):
+        if isinstance(c, str):
+            c={'text':c,'page':None,'section':None}
         pid=int(hashlib.sha1(f'{resource_id}:{i}'.encode()).hexdigest()[:15],16)
         points.append({'id':pid,'vector':embed(c['text']),'payload':{**c,'resource_id':resource_id,'subject_id':subject_id,'source':source,'status':status}})
     try:
@@ -51,6 +53,6 @@ def search_chunks(subject_id,query,top_k=8):
             'filter':{'must':[{'key':'subject_id','match':{'value':subject_id}},{'key':'status','match':{'value':'APPROVED'}}]}
         },timeout=90)
         if r.status_code>=400:
-            r=httpx.post(f'{settings.qdrant_url.rstrip("/")}/collections/{COLLECTION}/points/query',json={'query':embed(query),'limit':top_k,'with_payload':True},timeout=90)
+            r=httpx.post(f'{settings.qdrant_url.rstrip("/")}/collections/{COLLECTION}/points/query',json={'query':embed(query),'limit':top_k,'with_payload':True,'filter':{'must':[{'key':'subject_id','match':{'value':subject_id}},{'key':'status','match':{'value':'APPROVED'}}]}},timeout=90)
         r.raise_for_status();return [x.get('payload',{}) for x in r.json().get('result',[])]
     except Exception:return []
