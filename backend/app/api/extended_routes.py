@@ -50,7 +50,7 @@ async def upload_resource_v2(subject_id:int,title:str,resource_type:str="REFEREN
     text,pages=extract_text(file.filename,data);sections,_=extract_sections(file.filename,data)
     key=f"subjects/{subject_id}/resources/{version}-{re.sub(r'[^a-zA-Z0-9._-]','_',file.filename)}"
     stored=put_object(key,data,file.content_type or "application/octet-stream")
-    r=Resource(subject_id=subject_id,uploaded_by=u.id,title=title,resource_type=resource_type.upper(),storage_key=key if stored else None,status="DRAFT",version=version,parent_resource_id=latest.id if latest else None,extracted_text=text,page_count=pages)
+    r=Resource(subject_id=subject_id,uploaded_by=u.id,title=title,resource_type=resource_type.upper(),storage_key=key if stored else None,status="DRAFT",version=version,extracted_text=text,page_count=pages)
     db.add(r);db.flush();chunks=[]
     for sec in sections:
         for part in chunk_text(sec.get("text","")):chunks.append({"text":part,"page":sec.get("page"),"section":sec.get("section")})
