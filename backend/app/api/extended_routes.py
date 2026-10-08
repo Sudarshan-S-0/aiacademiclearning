@@ -64,6 +64,16 @@ class GradeSubmission(BaseModel):
     feedback: str | None = None
 
 
+class ContentUpdate(BaseModel):
+    title: str | None = None
+    body: str | None = None
+    source_reference: str | None = None
+
+
+class ContentStatusUpdate(BaseModel):
+    status: str
+
+
 class DepartmentCreate(BaseModel):
     code: str
     name: str
@@ -495,6 +505,91 @@ def generate_content(p: GenerateRequest, db: Session = Depends(get_db), u=Depend
     return {"id": c.id, "title": title, "type": c.content_type, "status": c.status,
             "body": body, "artifact_id": artifact.id if artifact else None,
             "sources": [x.get("citation") for x in contexts]}
+
+
+@router.get("/content/{content_id}")
+def get_content(content_id: int, db: Session = Depends(get_db), u=Depends(current_user)):
+    c = db.get(Content, content_id)
+    if not c or not can_access_subject(db, u, c.subject_id):
+        raise HTTPException(404, "Content not found")
+    if u.role == "STUDENT" and c.status != "PUBLISHED":
+        raise HTTPException(404, "Content not found")
+    sources = db.scalars(select(ContentSource).where(ContentSource.content_id == c.id)).all()
+    return {
+        "id": c.id, "subject_id": c.subject_id, "topic_id": c.topic_id,
+        "title": c.title, "type": c.content_type, "body": c.body,
+        "status": c.status, "version": c.version, "generated_by_ai": c.generated_by_ai,
+        "source_reference": c.source_reference,
+        "sources": [{"resource_id": s.resource_id, "chunk_id": s.chunk_id, "citation": s.citation} for s in sources],
+    }
+
+
+@router.patch("/content/{content_id}")
+def update_content(content_id: int, p: ContentUpdate, db: Session = Depends(get_db),
+                  u=Depends(require_roles("ADMIN", "TEACHER"))):
+    c = db.get(Content, content_id)
+    if not c or not can_access_subject(db, u, c.subject_id):
+        raise HTTPException(404, "Content not found")
+    if c.status in {"PUBLISHED", "ARCHIVED"}:
+        raise HTTPException(409, "Published or archived content cannot be edited")
+    if p.title is not None:
+        title = p.title.strip()
+        if not title:
+            raise HTTPException(400, "Title cannot be empty")
+        c.title = title
+    if p.body is not None:
+        body = p.body.strip()
+        if not body:
+            raise HTTPException(400, "Body cannot be empty")
+        c.body = body
+    if p.source_reference is not None:
+        c.source_reference = p.source_reference.strip() or None
+    # Any teacher edit requires another review before publication.
+    if c.status == "APPROVED":
+        c.status = "IN_REVIEW"
+    c.version += 1
+    audit(db, u, "CONTENT_EDITED", "CONTENT", c.id)
+    db.commit()
+    return {"id": c.id, "status": c.status, "version": c.version}
+
+
+@router.patch("/content/{content_id}/status")
+def update_content_status(content_id: int, p: ContentStatusUpdate, db: Session = Depends(get_db),
+                          u=Depends(require_roles("ADMIN", "TEACHER"))):
+    c = db.get(Content, content_id)
+    if not c or not can_access_subject(db, u, c.subject_id):
+        raise HTTPException(404, "Content not found")
+    target = p.status.upper()
+    allowed = {
+        "DRAFT": {"IN_REVIEW"},
+        "AI_GENERATED": {"IN_REVIEW"},
+        "IN_REVIEW": {"APPROVED", "DRAFT"},
+        "APPROVED": {"PUBLISHED", "IN_REVIEW"},
+        "PUBLISHED": {"ARCHIVED"},
+        "ARCHIVED": set(),
+    }
+    if target not in allowed.get(c.status, set()):
+        raise HTTPException(409, f"Invalid content transition: {c.status} -> {target}")
+    c.status = target
+    audit(db, u, "CONTENT_STATUS_CHANGED", "CONTENT", c.id,
+          json.dumps({"from": next((k for k, values in allowed.items() if c.status in values), None), "to": target}))
+    db.commit()
+    return {"id": c.id, "status": c.status}
+
+
+@router.get("/student/content")
+def student_content(db: Session = Depends(get_db), u=Depends(require_roles("STUDENT"))):
+    enrolled = select(Enrollment.subject_id).where(Enrollment.student_id == u.id)
+    rows = db.scalars(
+        select(Content).where(Content.subject_id.in_(enrolled), Content.status == "PUBLISHED")
+        .order_by(Content.subject_id, Content.id.desc())
+    ).all()
+    return [{
+        "id": c.id, "subject_id": c.subject_id, "topic_id": c.topic_id,
+        "title": c.title, "type": c.content_type, "body": c.body,
+        "status": c.status, "version": c.version,
+        "source_reference": c.source_reference,
+    } for c in rows]
 
 
 @router.get("/artifacts/{artifact_id}/download")
