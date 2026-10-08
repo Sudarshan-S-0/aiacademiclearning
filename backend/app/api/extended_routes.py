@@ -745,11 +745,21 @@ def submit_assignment(p: AssignmentSubmit, db: Session = Depends(get_db), u=Depe
     c = db.get(Content, p.content_id)
     if not c or c.content_type != "ASSIGNMENT" or c.status != "PUBLISHED" or not can_access_subject(db, u, c.subject_id):
         raise HTTPException(404, "Assignment unavailable")
-    s = AssignmentSubmission(content_id=c.id, student_id=u.id, answer_text=p.answer_text)
+    if not p.answer_text.strip():
+        raise HTTPException(400, "Assignment answer cannot be empty")
+    existing = db.scalar(select(AssignmentSubmission).where(
+        AssignmentSubmission.content_id == c.id,
+        AssignmentSubmission.student_id == u.id,
+    ))
+    if existing:
+        raise HTTPException(409, "Assignment already submitted")
+    s = AssignmentSubmission(content_id=c.id, student_id=u.id, answer_text=p.answer_text.strip())
     db.add(s); db.flush()
     db.add(Progress(student_id=u.id, subject_id=c.subject_id, topic_id=c.topic_id,
-                    activity_type="ASSIGNMENT", score=0, max_score=1, completed=True))
-    audit(db, u, "SUBMIT_ASSIGNMENT", "ASSIGNMENT", c.id); db.commit()
+                    activity_type="ASSIGNMENT", score=0, max_score=100, completed=True))
+    audit(db, u, "SUBMIT_ASSIGNMENT", "ASSIGNMENT", c.id,
+          json.dumps({"submission_id": s.id}))
+    db.commit()
     return {"submission_id": s.id, "status": "SUBMITTED"}
 
 
@@ -778,9 +788,11 @@ def grade_assignment(submission_id: int, p: GradeSubmission, db: Session = Depen
         Progress.student_id == s.student_id, Progress.subject_id == content.subject_id,
         Progress.topic_id == content.topic_id, Progress.activity_type == "ASSIGNMENT"
     ).order_by(Progress.id.desc()))
-    if progress:
-        progress.score, progress.max_score = p.score, 100
-    audit(db, u, "GRADE_ASSIGNMENT", "ASSIGNMENT_SUBMISSION", s.id)
+    if not progress:
+        raise HTTPException(409, "Assignment progress record not found")
+    progress.score, progress.max_score, progress.completed = p.score, 100, True
+    audit(db, u, "GRADE_ASSIGNMENT", "ASSIGNMENT_SUBMISSION", s.id,
+          json.dumps({"score": p.score}))
     db.commit()
     return {"id": s.id, "score": s.score, "feedback": s.feedback}
 
