@@ -178,3 +178,87 @@ def test_qdrant_search_filters_subject_and_approved_status(monkeypatch):
     assert {"key":"status","match":{"value":"APPROVED"}} in must
     assert captured["json"]["limit"]==5
     assert rows[0]["status"]=="APPROVED"
+
+
+def test_ai_ask_enforces_subject_isolation(monkeypatch):
+    db_path=tempfile.mktemp(suffix=".db")
+    engine=create_engine(f"sqlite:///{db_path}")
+    Base.metadata.create_all(engine)
+    SessionLocal=sessionmaker(bind=engine)
+    db=SessionLocal()
+
+    d=Department(code="AI",name="AI Security")
+    db.add(d);db.flush()
+    sem=Semester(department_id=d.id,academic_year="2026-27",semester_number=1,regulation="TEST")
+    db.add(sem);db.flush()
+    allowed=Subject(semester_id=sem.id,code="AI101",name="Allowed Subject")
+    private=Subject(semester_id=sem.id,code="AI102",name="Private Subject")
+    db.add_all([allowed,private]);db.flush()
+
+    teacher=User(full_name="AI Teacher",email="ai.teacher@example.com",
+                 password_hash=pwd.hash("Teacher@123"),role="TEACHER")
+    student=User(full_name="AI Student",email="ai.student@example.com",
+                 password_hash=pwd.hash("Student@123"),role="STUDENT")
+    db.add_all([teacher,student]);db.flush()
+    db.add(Enrollment(student_id=student.id,subject_id=allowed.id,academic_year="2026-27"))
+
+    allowed_resource=Resource(
+        subject_id=allowed.id,uploaded_by=teacher.id,title="Allowed Notes",
+        resource_type="REFERENCE",status="APPROVED",
+        extracted_text="Approved material for the allowed subject.",page_count=1
+    )
+    private_resource=Resource(
+        subject_id=private.id,uploaded_by=teacher.id,title="Private Notes",
+        resource_type="REFERENCE",status="APPROVED",
+        extracted_text="Private material that must never be exposed.",page_count=1
+    )
+    db.add_all([allowed_resource,private_resource]);db.commit()
+    allowed_id=allowed.id
+    private_id=private.id
+    db.close()
+
+    def override():
+        db=SessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db]=override
+
+    captured={}
+    def fake_answer(question, contexts):
+        captured["contexts"]=contexts
+        return {"answer":"Grounded answer","sources":[x["source"] for x in contexts]}
+
+    monkeypatch.setattr("app.api.routes.search_chunks",lambda *a,**k: [])
+    monkeypatch.setattr("app.api.routes.grounded_answer",fake_answer)
+
+    with TestClient(app) as client:
+        login=client.post(
+            "/api/auth/login",
+            json={"email":"ai.student@example.com","password":"Student@123"},
+        )
+        assert login.status_code==200,login.text
+        headers={"Authorization":f"Bearer {login.json()['access_token']}"}
+
+        denied=client.post(
+            "/api/ai/ask",
+            headers=headers,
+            json={"subject_id":private_id,"question":"What is in the private subject?"},
+        )
+        assert denied.status_code==403,denied.text
+
+        allowed_response=client.post(
+            "/api/ai/ask",
+            headers=headers,
+            json={"subject_id":allowed_id,"question":"What is the approved material?"},
+        )
+        assert allowed_response.status_code==200,allowed_response.text
+        assert captured["contexts"]
+        assert [x["source"] for x in captured["contexts"]]==["Allowed Notes"]
+
+    app.dependency_overrides.clear()
+    engine.dispose()
+    if os.path.exists(db_path):
+        os.remove(db_path)
