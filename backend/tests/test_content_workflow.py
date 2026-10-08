@@ -68,9 +68,6 @@ def test_content_review_publish_and_student_isolation(client):
     admin_headers = login(test_client, "content-admin@example.com", "Admin@123")
     student_headers = login(test_client, "content-student@example.com", "Student@123")
 
-    with app.dependency_overrides[get_db] as _:
-        pass
-
     response = test_client.post(
         "/api/ai/generate",
         headers=admin_headers,
