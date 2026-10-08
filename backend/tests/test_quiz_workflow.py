@@ -176,6 +176,29 @@ def test_quiz_lifecycle_and_student_publication_gate(client):
     )
     assert invalid_reverse.status_code == 409
 
+    foreign_answer = test_client.post(
+        "/api/quizzes/attempt",
+        headers=student_headers,
+        json={
+            "quiz_id": quiz_id,
+            "answers": [{"question_id": 999999, "answer": "0"}],
+        },
+    )
+    assert foreign_answer.status_code == 400
+
+    duplicate_answers = test_client.post(
+        "/api/quizzes/attempt",
+        headers=student_headers,
+        json={
+            "quiz_id": quiz_id,
+            "answers": [
+                {"question_id": question_id, "answer": "0"},
+                {"question_id": question_id, "answer": "0"},
+            ],
+        },
+    )
+    assert duplicate_answers.status_code == 400
+
     attempt = test_client.post(
         "/api/quizzes/attempt",
         headers=student_headers,
