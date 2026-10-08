@@ -157,32 +157,6 @@ def syllabus_versions(subject_id:int,db:Session=Depends(get_db),u=Depends(curren
 def create_content(p:ContentCreate,db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
     x=Content(**p.model_dump(),status="IN_REVIEW",created_by=u.id);db.add(x);db.flush();audit(db,u,"CREATE_CONTENT","CONTENT",x.id);db.commit();return {"id":x.id,"status":x.status}
-@router.get("/content")
-def list_content(subject_id:int,db:Session=Depends(get_db),u=Depends(current_user)):
-    if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
-    q=select(Content).where(Content.subject_id==subject_id)
-    if u.role=="STUDENT":q=q.where(Content.status=="PUBLISHED")
-    return [{"id":x.id,"title":x.title,"type":x.content_type,"status":x.status,"body":x.body,"topic_id":x.topic_id,"source":x.source_reference,"ai":x.generated_by_ai} for x in db.scalars(q.order_by(Content.id.desc())).all()]
-@router.patch("/content/{content_id}/status")
-def content_status(content_id:int,p:PublishAction,db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
-    if p.status not in {"DRAFT","IN_REVIEW","APPROVED","PUBLISHED","ARCHIVED"}:raise HTTPException(400,"Invalid lifecycle state")
-    x=db.get(Content,content_id)
-    if not x or not can_access_subject(db,u,x.subject_id):raise HTTPException(404,"Content not found")
-    allowed={
-        "DRAFT":{"IN_REVIEW"},
-        "AI_GENERATED":{"IN_REVIEW"},
-        "IN_REVIEW":{"APPROVED","DRAFT"},
-        "APPROVED":{"PUBLISHED","IN_REVIEW"},
-        "PUBLISHED":{"ARCHIVED"},
-        "ARCHIVED":set(),
-    }
-    if p.status not in allowed.get(x.status,set()):
-        raise HTTPException(409,f"Invalid content transition: {x.status} -> {p.status}")
-    previous=x.status
-    x.status=p.status
-    audit(db,u,"CONTENT_STATUS_CHANGED","CONTENT",x.id,json.dumps({"from":previous,"to":p.status}))
-    db.commit()
-    return {"id":x.id,"status":x.status}
 @router.post("/ai/ask")
 def ask_ai(p:AskRequest,db:Session=Depends(get_db),u=Depends(current_user)):
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
