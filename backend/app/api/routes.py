@@ -168,7 +168,21 @@ def content_status(content_id:int,p:PublishAction,db:Session=Depends(get_db),u=D
     if p.status not in {"DRAFT","IN_REVIEW","APPROVED","PUBLISHED","ARCHIVED"}:raise HTTPException(400,"Invalid lifecycle state")
     x=db.get(Content,content_id)
     if not x or not can_access_subject(db,u,x.subject_id):raise HTTPException(404,"Content not found")
-    x.status=p.status;audit(db,u,f"CONTENT_{p.status}","CONTENT",x.id);db.commit();return {"id":x.id,"status":x.status}
+    allowed={
+        "DRAFT":{"IN_REVIEW"},
+        "AI_GENERATED":{"IN_REVIEW"},
+        "IN_REVIEW":{"APPROVED","DRAFT"},
+        "APPROVED":{"PUBLISHED","IN_REVIEW"},
+        "PUBLISHED":{"ARCHIVED"},
+        "ARCHIVED":set(),
+    }
+    if p.status not in allowed.get(x.status,set()):
+        raise HTTPException(409,f"Invalid content transition: {x.status} -> {p.status}")
+    previous=x.status
+    x.status=p.status
+    audit(db,u,"CONTENT_STATUS_CHANGED","CONTENT",x.id,json.dumps({"from":previous,"to":p.status}))
+    db.commit()
+    return {"id":x.id,"status":x.status}
 @router.post("/ai/ask")
 def ask_ai(p:AskRequest,db:Session=Depends(get_db),u=Depends(current_user)):
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
@@ -285,7 +299,7 @@ def attempt_quiz(p:AttemptCreate,db:Session=Depends(get_db),u=Depends(require_ro
 @router.get("/student/content")
 def student_content(db:Session=Depends(get_db),u=Depends(require_roles("STUDENT"))):
     ids=select(Enrollment.subject_id).where(Enrollment.student_id==u.id);rows=db.scalars(select(Content).where(Content.subject_id.in_(ids),Content.status=="PUBLISHED")).all()
-    return [{"id":x.id,"subject_id":x.subject_id,"title":x.title,"type":x.content_type,"body":x.body,"source":x.source_reference} for x in rows]
+    return [{"id":x.id,"subject_id":x.subject_id,"topic_id":x.topic_id,"title":x.title,"type":x.content_type,"body":x.body,"status":x.status,"version":x.version,"generated_by_ai":x.generated_by_ai,"source_reference":x.source_reference,"source":x.source_reference} for x in rows]
 @router.get("/student/progress")
 def student_progress(db:Session=Depends(get_db),u=Depends(require_roles("STUDENT"))):
     return [{"id":x.id,"subject_id":x.subject_id,"topic_id":x.topic_id,"activity":x.activity_type,"score":x.score,"max_score":x.max_score,"completed":x.completed} for x in db.scalars(select(Progress).where(Progress.student_id==u.id).order_by(Progress.id.desc())).all()]
