@@ -117,6 +117,7 @@ def test_pyq_analytics_exposes_evidence_based_weightage_and_trends(client):
     assert response.status_code == 200, response.text
     data = response.json()
     assert data["total_marks"] == 20
+    assert data["unit_weightage"]
     assert data["unit_weightage"][0]["percentage"] == 100
     assert data["year_trend"] == [
         {"year": 2024, "marks": 10, "questions": 1},
