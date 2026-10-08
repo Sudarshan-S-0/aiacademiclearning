@@ -591,21 +591,6 @@ def update_content_status(content_id: int, p: ContentStatusUpdate, db: Session =
     return {"id": c.id, "status": c.status}
 
 
-@router.get("/student/content")
-def student_content(db: Session = Depends(get_db), u=Depends(require_roles("STUDENT"))):
-    enrolled = select(Enrollment.subject_id).where(Enrollment.student_id == u.id)
-    rows = db.scalars(
-        select(Content).where(Content.subject_id.in_(enrolled), Content.status == "PUBLISHED")
-        .order_by(Content.subject_id, Content.id.desc())
-    ).all()
-    return [{
-        "id": c.id, "subject_id": c.subject_id, "topic_id": c.topic_id,
-        "title": c.title, "type": c.content_type, "body": c.body,
-        "status": c.status, "version": c.version,
-        "source_reference": c.source_reference,
-    } for c in rows]
-
-
 @router.get("/artifacts/{artifact_id}/download")
 def download_artifact(artifact_id: int, db: Session = Depends(get_db), u=Depends(current_user)):
     a = db.get(GeneratedArtifact, artifact_id)
