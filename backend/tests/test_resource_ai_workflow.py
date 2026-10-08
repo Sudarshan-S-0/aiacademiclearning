@@ -131,3 +131,50 @@ def test_resource_chunks_are_persisted_with_citations(monkeypatch):
     app.dependency_overrides.clear()
     engine.dispose()
     if os.path.exists(db_path): os.remove(db_path)
+
+
+def test_grounded_answer_ignores_unapproved_context(monkeypatch):
+    from app.services import ai
+    def fake_generate(prompt, temperature=0.2):
+        assert "approved concept" in prompt
+        assert "draft secret" not in prompt
+        return "The approved concept is supported."
+    monkeypatch.setattr(ai, "gemini_generate", fake_generate)
+    result=ai.grounded_answer("What is the approved concept?",[
+        {"status":"DRAFT","source":"Draft","text":"draft secret","citation":"page 1"},
+        {"status":"APPROVED","source":"Notes","text":"approved concept","citation":"page 2, section Classification"},
+    ])
+    assert result["answer"].startswith("The approved concept")
+    assert result["sources"]==["page 2, section Classification"]
+
+
+def test_grounded_answer_returns_exact_fallback(monkeypatch):
+    from app.services import ai
+    monkeypatch.setattr(ai, "gemini_generate", lambda *a,**k: None)
+    result=ai.grounded_answer("What is quantum networking?",[
+        {"status":"APPROVED","source":"Notes","text":"Classification predicts categories.","citation":"page 1"},
+    ])
+    assert result["answer"]==ai.APPROVED_RESOURCE_MESSAGE
+    assert result["sources"]==[]
+
+
+def test_qdrant_search_filters_subject_and_approved_status(monkeypatch):
+    from app.services import qdrant
+    captured={}
+    class FakeResponse:
+        status_code=200
+        def json(self): return {"result":[{"payload":{"status":"APPROVED","subject_id":7,"text":"approved"}}]}
+        def raise_for_status(self): return None
+    def fake_post(url,**kwargs):
+        captured["json"]=kwargs["json"]
+        return FakeResponse()
+    monkeypatch.setattr(qdrant,"ensure_collection",lambda:True)
+    monkeypatch.setattr(qdrant,"embed",lambda text:[0.0]*384)
+    monkeypatch.setattr(qdrant.httpx,"post",fake_post)
+    monkeypatch.setattr(qdrant.settings,"qdrant_url","http://qdrant.test")
+    rows=qdrant.search_chunks(7,"classification",top_k=5)
+    must=captured["json"]["filter"]["must"]
+    assert {"key":"subject_id","match":{"value":7}} in must
+    assert {"key":"status","match":{"value":"APPROVED"}} in must
+    assert captured["json"]["limit"]==5
+    assert rows[0]["status"]=="APPROVED"
