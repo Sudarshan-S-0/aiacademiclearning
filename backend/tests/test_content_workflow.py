@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from app.api.routes import pwd
 from app.db.session import Base, get_db
 from app.main import app
-from app.models.models import Content, Department, Enrollment, Semester, Subject, User
+from app.models.models import Content, Department, Enrollment, Semester, Subject, User, TeacherSubject, Topic
 
 
 @pytest.fixture()
@@ -33,10 +33,14 @@ def client():
                  password_hash=pwd.hash("Admin@123"), role="ADMIN")
     student = User(full_name="Content Student", email="content-student@example.com",
                    password_hash=pwd.hash("Student@123"), role="STUDENT")
-    db.add_all([subject, admin, student])
+    teacher = User(full_name="Content Teacher", email="content-teacher@example.com",
+                   password_hash=pwd.hash("Teacher@123"), role="TEACHER")
+    db.add_all([subject, admin, student, teacher])
     db.flush()
     db.add(Enrollment(student_id=student.id, subject_id=subject.id,
                       academic_year="2026-27"))
+    db.add(TeacherSubject(teacher_id=teacher.id, subject_id=subject.id, academic_year="2026-27"))
+    db.add(Topic(subject_id=subject.id, unit_number=1, topic_name="Arrays", sequence_order=1, estimated_hours=4))
     db.commit()
     subject_id = subject.id
     db.close()
@@ -152,3 +156,64 @@ def test_student_cannot_read_unpublished_content(client):
     invalid = test_client.patch(f"/api/content/{content_id}/status", headers=admin_headers,
                                 json={"status": "PUBLISHED"})
     assert invalid.status_code == 409
+
+
+def test_teacher_can_approve_and_publish_but_student_cannot_change_lifecycle(client):
+    test_client, subject_id = client
+    teacher_headers = login(test_client, "content-teacher@example.com", "Teacher@123")
+    student_headers = login(test_client, "content-student@example.com", "Student@123")
+
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        content = Content(subject_id=subject_id, title="Teacher Review Notes",
+                          content_type="NOTES", body="Reviewed academic notes.",
+                          status="IN_REVIEW", version=1)
+        session.add(content)
+        session.commit()
+        content_id = content.id
+    finally:
+        session.close()
+
+    approved = test_client.patch(f"/api/content/{content_id}/status",
+                                 headers=teacher_headers, json={"status": "APPROVED"})
+    assert approved.status_code == 200, approved.text
+
+    published = test_client.patch(f"/api/content/{content_id}/status",
+                                   headers=teacher_headers, json={"status": "PUBLISHED"})
+    assert published.status_code == 200, published.text
+
+    forbidden = test_client.patch(f"/api/content/{content_id}/status",
+                                  headers=student_headers, json={"status": "ARCHIVED"})
+    assert forbidden.status_code == 403
+
+    student_view = test_client.get(f"/api/content/{content_id}", headers=student_headers)
+    assert student_view.status_code == 200
+    assert student_view.json()["status"] == "PUBLISHED"
+
+
+def test_content_status_transitions_reject_skipping_review(client):
+    test_client, subject_id = client
+    admin_headers = login(test_client, "content-admin@example.com", "Admin@123")
+
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        content = Content(subject_id=subject_id, title="Lifecycle Test",
+                          content_type="NOTES", body="Draft.",
+                          status="DRAFT", version=1)
+        session.add(content)
+        session.commit()
+        content_id = content.id
+    finally:
+        session.close()
+
+    skipped = test_client.patch(f"/api/content/{content_id}/status",
+                                headers=admin_headers, json={"status": "PUBLISHED"})
+    assert skipped.status_code == 409
+
+    reviewed = test_client.patch(f"/api/content/{content_id}/status",
+                                  headers=admin_headers, json={"status": "IN_REVIEW"})
+    assert reviewed.status_code == 200
+
+    approved = test_client.patch(f"/api/content/{content_id}/status",
+                                 headers=admin_headers, json={"status": "APPROVED"})
+    assert approved.status_code == 200
