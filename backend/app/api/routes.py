@@ -280,7 +280,13 @@ def quiz_detail(quiz_id:int,db:Session=Depends(get_db),u=Depends(current_user)):
 def attempt_quiz(p:AttemptCreate,db:Session=Depends(get_db),u=Depends(require_roles("STUDENT"))):
     qz=db.get(Quiz,p.quiz_id)
     if not qz or qz.status!="PUBLISHED" or not can_access_subject(db,u,qz.subject_id):raise HTTPException(404,"Quiz unavailable")
-    qs=db.scalars(select(QuizQuestion).where(QuizQuestion.quiz_id==qz.id)).all();amap={a.question_id:a.answer.strip().lower() for a in p.answers};total=sum(q.marks for q in qs);score=0
+    qs=db.scalars(select(QuizQuestion).where(QuizQuestion.quiz_id==qz.id)).all()
+    valid_ids={q.id for q in qs}
+    submitted_ids=[a.question_id for a in p.answers]
+    if len(submitted_ids) != len(set(submitted_ids)):raise HTTPException(400,"Duplicate question answers are not allowed")
+    if any(question_id not in valid_ids for question_id in submitted_ids):raise HTTPException(400,"Answer contains a question from another quiz")
+    amap={a.question_id:a.answer.strip().lower() for a in p.answers};total=sum(q.marks for q in qs);score=0
+    if total <= 0:raise HTTPException(400,"Quiz has no scorable questions")
     attempt=Attempt(quiz_id=qz.id,student_id=u.id,total=total,completed_at=datetime.now(timezone.utc));db.add(attempt);db.flush()
     for q in qs:
         ans=amap.get(q.id,"");correct=ans==q.correct_answer.strip().lower();marks=q.marks if correct else 0;score+=marks;db.add(AttemptAnswer(attempt_id=attempt.id,question_id=q.id,answer=ans,is_correct=correct,marks_awarded=marks));db.add(Progress(student_id=u.id,subject_id=qz.subject_id,topic_id=q.topic_id,activity_type="QUIZ",score=marks,max_score=q.marks,completed=True))
