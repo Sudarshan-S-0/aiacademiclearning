@@ -201,7 +201,20 @@ def generate_content(p:AIContentRequest,db:Session=Depends(get_db),u=Depends(req
 @router.post("/pyq/questions")
 def add_pyq(p:PYQCreate,db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
-    q=PYQQuestion(**p.model_dump(),frequency_key=re.sub(r'[^a-z0-9 ]','',p.question_text.lower())[:255]);db.add(q);db.flush();audit(db,u,"ADD_PYQ","PYQ",q.id);db.commit();return {"id":q.id}
+    ts=db.scalars(select(Topic).where(Topic.subject_id==p.subject_id,Topic.status=="ACTIVE")).all()
+    q=PYQQuestion(**p.model_dump(),frequency_key=re.sub(r'[^a-z0-9 ]','',p.question_text.lower())[:255])
+    if ts:
+        words=set(re.findall(r'[a-z0-9]{3,}',q.question_text.lower()))
+        best,best_score=None,0
+        for t in ts:
+            tw=set(re.findall(r'[a-z0-9]{3,}',t.topic_name.lower()))
+            score=len(words&tw)
+            if score>best_score:best,best_score=t,score
+        if best:
+            q.topic_id=best.id
+            q.unit_number=best.unit_number
+            q.mapping_confidence=round(best_score/max(len(words),1),3)
+    db.add(q);db.flush();audit(db,u,"ADD_PYQ","PYQ",q.id);db.commit();return {"id":q.id}
 @router.post("/pyq/reanalyze/{subject_id}")
 def reanalyze_pyq(subject_id:int,db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
