@@ -564,16 +564,25 @@ def edit_plan(subject_id: int, p: PlanEdit, db: Session = Depends(get_db), u=Dep
         db.add(Topic(subject_id=subject_id, unit_number=t.unit_number, topic_name=p.note,
                      sequence_order=t.sequence_order + 1, estimated_hours=t.estimated_hours))
     elif action == "RESCHEDULE" and p.new_week:
-        item = db.scalar(select(TeachingPlan).where(TeachingPlan.subject_id == subject_id,
-                                                     TeachingPlan.topic_id == p.topic_id,
-                                                     TeachingPlan.status != "COMPLETED"))
-        if item:
-            item.planned_week = p.new_week
-        else:
+        subject = db.get(Subject, subject_id)
+        if p.new_week < 1 or p.new_week > subject.weeks:
+            raise HTTPException(400, "Target week is outside the subject schedule")
+        # Rebuild first so the requested topic has a current plan row, then
+        # apply the manual week after rebuilding. This prevents the rebuild
+        # from immediately overwriting the requested reschedule.
+        rebuild_plan(db, subject_id)
+        item = db.scalar(select(TeachingPlan).where(
+            TeachingPlan.subject_id == subject_id,
+            TeachingPlan.topic_id == p.topic_id,
+            TeachingPlan.status != "COMPLETED",
+        ))
+        if not item:
             raise HTTPException(404, "Plan item not found")
+        item.planned_week = p.new_week
     else:
         raise HTTPException(400, "Unsupported plan edit")
-    rebuild_plan(db, subject_id)
+    if action != "RESCHEDULE":
+        rebuild_plan(db, subject_id)
     audit(db, u, "TEACHING_PLAN_EDIT", "SUBJECT", subject_id, json.dumps(p.model_dump()))
     db.commit()
     return plan_rows(db, subject_id)
