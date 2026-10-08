@@ -9,7 +9,7 @@ from app.core.config import settings
 from app.db.session import get_db
 from app.models.models import *
 from app.services.ai import build_rag_prompt,grounded_answer,gemini_generate
-from app.services.document import extract_text,normalize_text,chunk_text
+from app.services.document import extract_text,normalize_text,chunk_text,extract_chunks
 from app.services.storage import put_object,get_object
 from app.services.qdrant import upsert_chunks
 router=APIRouter(prefix="/api");pwd=CryptContext(schemes=["bcrypt"],deprecated="auto")
@@ -122,8 +122,18 @@ async def upload_resource(subject_id:int,title:str|None=None,resource_type:str="
     if ext not in allowed:raise HTTPException(415,"Unsupported file type")
     if len(data)>20*1024*1024:raise HTTPException(413,"Maximum file size is 20 MB")
     key=f"subjects/{subject_id}/resources/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{u.id}_{file.filename.replace(' ','_')}"
-    text,pages=extract_text(file.filename,data);text=normalize_text(text);stored=put_object(key,data,file.content_type or "application/octet-stream")
-    x=Resource(subject_id=subject_id,uploaded_by=u.id,title=title or file.filename,resource_type=resource_type,storage_key=key,status="DRAFT",extracted_text=text,page_count=pages);db.add(x);db.flush();upsert_chunks(x.id,subject_id,chunk_text(text),x.title);audit(db,u,"UPLOAD_RESOURCE","RESOURCE",x.id,json.dumps({"key":key,"bytes":len(data),"stored":stored}));db.commit();return {"id":x.id,"storage_key":key,"status":"DRAFT","bytes":len(data),"extracted_chars":len(text),"pages":pages,"stored":stored}
+    text,pages=extract_text(file.filename,data);text=normalize_text(text);chunks,pages=extract_chunks(file.filename,data);stored=put_object(key,data,file.content_type or "application/octet-stream")
+    x=Resource(subject_id=subject_id,uploaded_by=u.id,title=title or file.filename,resource_type=resource_type,storage_key=key,status="DRAFT",extracted_text=text,page_count=pages);db.add(x);db.flush()
+    for i,ch in enumerate(chunks):db.add(ResourceChunk(resource_id=x.id,subject_id=subject_id,chunk_index=i,text=ch['text'],page_number=ch.get('page'),section=ch.get('section'),qdrant_point_id=str(int(__import__('hashlib').sha1(f'{x.id}:{i}'.encode()).hexdigest()[:15],16))))
+    vectorized=upsert_chunks(x.id,subject_id,chunks,x.title)
+    audit(db,u,"UPLOAD_RESOURCE","RESOURCE",x.id,json.dumps({"key":key,"bytes":len(data),"stored":stored,"chunks":len(chunks),"vectorized":bool(vectorized)}));db.commit();return {"id":x.id,"storage_key":key,"status":"DRAFT","bytes":len(data),"extracted_chars":len(text),"pages":pages,"chunks":len(chunks),"vectorized":bool(vectorized),"stored":stored}
+@router.get("/resources/{resource_id}/chunks")
+def resource_chunks(resource_id:int,db:Session=Depends(get_db),u=Depends(current_user)):
+    x=db.get(Resource,resource_id)
+    if not x or not can_access_subject(db,u,x.subject_id):raise HTTPException(404,"Resource not found")
+    if u.role=="STUDENT" and x.status!="APPROVED":raise HTTPException(403,"Resource not published to students")
+    return [{"id":c.id,"index":c.chunk_index,"text":c.text,"page":c.page_number,"section":c.section,"qdrant_point_id":c.qdrant_point_id} for c in db.scalars(select(ResourceChunk).where(ResourceChunk.resource_id==resource_id).order_by(ResourceChunk.chunk_index)).all()]
+
 @router.get("/resources")
 def resources(subject_id:int,db:Session=Depends(get_db),u=Depends(current_user)):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
