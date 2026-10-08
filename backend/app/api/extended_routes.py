@@ -559,6 +559,7 @@ def update_content_status(content_id: int, p: ContentStatusUpdate, db: Session =
     c = db.get(Content, content_id)
     if not c or not can_access_subject(db, u, c.subject_id):
         raise HTTPException(404, "Content not found")
+    previous = c.status
     target = p.status.upper()
     allowed = {
         "DRAFT": {"IN_REVIEW"},
@@ -572,7 +573,7 @@ def update_content_status(content_id: int, p: ContentStatusUpdate, db: Session =
         raise HTTPException(409, f"Invalid content transition: {c.status} -> {target}")
     c.status = target
     audit(db, u, "CONTENT_STATUS_CHANGED", "CONTENT", c.id,
-          json.dumps({"from": next((k for k, values in allowed.items() if c.status in values), None), "to": target}))
+          json.dumps({"from": previous, "to": target}))
     db.commit()
     return {"id": c.id, "status": c.status}
 
