@@ -236,18 +236,33 @@ def update_plan(subject_id:int,p:PlanAction,db:Session=Depends(get_db),u=Depends
 @router.post("/quizzes")
 def create_quiz(p:QuizCreate,db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
-    q=Quiz(**p.model_dump());db.add(q);db.flush();audit(db,u,"CREATE_QUIZ","QUIZ",q.id);db.commit();return {"id":q.id,"status":q.status}
+    if p.status != "DRAFT":raise HTTPException(400,"New quizzes must start in DRAFT")
+    if p.duration_minutes <= 0:raise HTTPException(400,"duration_minutes must be positive")
+    if not p.title.strip():raise HTTPException(400,"Quiz title is required")
+    q=Quiz(subject_id=p.subject_id,title=p.title.strip(),duration_minutes=p.duration_minutes,status="DRAFT");db.add(q);db.flush();audit(db,u,"CREATE_QUIZ","QUIZ",q.id);db.commit();return {"id":q.id,"status":q.status}
 @router.post("/quizzes/{quiz_id}/questions")
 def add_quiz_question(quiz_id:int,p:QuizQuestionCreate,db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     qz=db.get(Quiz,quiz_id)
     if not qz or not can_access_subject(db,u,qz.subject_id):raise HTTPException(404,"Quiz not found")
-    q=QuizQuestion(quiz_id=quiz_id,topic_id=p.topic_id,question_text=p.question_text,marks=p.marks,correct_answer=p.correct_answer,options_json=json.dumps(p.options or []));db.add(q);db.commit();return {"id":q.id}
+    if qz.status != "DRAFT":raise HTTPException(409,"Only DRAFT quizzes can be edited")
+    if not p.question_text.strip() or not p.correct_answer.strip():raise HTTPException(400,"Question and correct_answer are required")
+    if p.marks <= 0:raise HTTPException(400,"Question marks must be positive")
+    if p.topic_id is not None:
+        topic=db.get(Topic,p.topic_id)
+        if not topic or topic.subject_id != qz.subject_id:raise HTTPException(400,"topic_id must belong to the quiz subject")
+    q=QuizQuestion(quiz_id=quiz_id,topic_id=p.topic_id,question_text=p.question_text.strip(),marks=p.marks,correct_answer=p.correct_answer.strip(),options_json=json.dumps(p.options or []));db.add(q);db.flush();audit(db,u,"ADD_QUIZ_QUESTION","QUIZ_QUESTION",q.id);db.commit();return {"id":q.id}
 @router.patch("/quizzes/{quiz_id}/status")
 def quiz_status(quiz_id:int,status:str=Query(...),db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     q=db.get(Quiz,quiz_id)
     if not q or not can_access_subject(db,u,q.subject_id):raise HTTPException(404,"Quiz not found")
     if status not in {"DRAFT","PUBLISHED","ARCHIVED"}:raise HTTPException(400,"Invalid quiz status")
-    q.status=status;audit(db,u,f"QUIZ_{status}","QUIZ",q.id);db.commit();return {"id":q.id,"status":status}
+    allowed={"DRAFT":{"PUBLISHED"},"PUBLISHED":{"ARCHIVED"},"ARCHIVED":set()}
+    if status not in allowed[q.status]:raise HTTPException(409,f"Invalid quiz transition: {q.status} -> {status}")
+    if status=="PUBLISHED":
+        count=db.scalar(select(func.count(QuizQuestion.id)).where(QuizQuestion.quiz_id==q.id)) or 0
+        if count == 0:raise HTTPException(400,"A quiz must contain at least one question before publication")
+    previous=q.status
+    q.status=status;audit(db,u,f"QUIZ_{status}","QUIZ",q.id,json.dumps({"from":previous,"to":status}));db.commit();return {"id":q.id,"status":q.status}
 @router.get("/quizzes")
 def quizzes(subject_id:int,db:Session=Depends(get_db),u=Depends(current_user)):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
