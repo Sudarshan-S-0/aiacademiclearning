@@ -49,6 +49,9 @@ def client():
         hours_per_week=4,
         lecture_duration_minutes=60,
     )
+    db.add(subject)
+    db.flush()
+
     topic = Topic(
         subject_id=subject.id,
         unit_number=1,
