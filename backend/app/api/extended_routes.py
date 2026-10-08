@@ -33,6 +33,19 @@ class PlanEdit(BaseModel):
     note: str | None = None
 
 
+class PYQQuestionInput(BaseModel):
+    year: int | None = None
+    question_no: str | None = None
+    question_text: str
+    marks: float = 1.0
+
+
+class PYQBulkRequest(BaseModel):
+    subject_id: int
+    resource_id: int | None = None
+    questions: list[PYQQuestionInput]
+
+
 class AssignmentSubmit(BaseModel):
     content_id: int
     answer_text: str
@@ -505,6 +518,47 @@ def ask_v2(subject_id: int, question: str, db: Session = Depends(get_db), u=Depe
     if not can_access_subject(db, u, subject_id):
         raise HTTPException(403, "Subject access denied")
     return grounded_answer(question, approved_contexts(db, subject_id, question))
+
+
+@router.post("/pyq/questions/bulk")
+def add_pyq_questions(p: PYQBulkRequest, db: Session = Depends(get_db),
+                      u=Depends(require_roles("ADMIN", "TEACHER"))):
+    if not can_access_subject(db, u, p.subject_id):
+        raise HTTPException(403, "Subject access denied")
+    if not p.questions:
+        raise HTTPException(400, "At least one PYQ question is required")
+    if p.resource_id:
+        resource = db.get(Resource, p.resource_id)
+        if not resource or resource.subject_id != p.subject_id:
+            raise HTTPException(404, "PYQ resource not found")
+    created = []
+    for item in p.questions:
+        text_value = item.question_text.strip()
+        if not text_value:
+            continue
+        q = PYQQuestion(
+            subject_id=p.subject_id,
+            resource_id=p.resource_id,
+            year=item.year,
+            question_no=item.question_no,
+            question_text=text_value,
+            marks=max(float(item.marks), 0.0),
+        )
+        db.add(q)
+        created.append(q)
+    if not created:
+        raise HTTPException(400, "No valid PYQ questions supplied")
+    db.flush()
+    analyzed = pyq_reanalyze(db, p.subject_id)
+    audit(db, u, "PYQ_QUESTIONS_IMPORTED", "SUBJECT", p.subject_id,
+          json.dumps({"created": len(created), "reanalyzed": len(analyzed),
+                      "resource_id": p.resource_id}))
+    db.commit()
+    return {"created": len(created), "reanalyzed": len(analyzed),
+            "questions": [{"id": q.id, "year": q.year, "question_no": q.question_no,
+                           "question_text": q.question_text, "marks": q.marks,
+                           "topic_id": q.topic_id, "unit_number": q.unit_number,
+                           "mapping_confidence": q.mapping_confidence} for q in created]}
 
 
 @router.post("/pyq/reanalyze-v2/{subject_id}")
