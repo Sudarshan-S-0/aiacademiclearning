@@ -267,3 +267,38 @@ def test_assignment_submission_grading_and_object_isolation(client):
     assert subject["activities"] == 1
     assert subject["completed"] == 1
     assert subject["percentage"] == 85
+
+    teacher_analytics = test_client.get(
+        f"/api/analytics/teacher-v2/{subject_id}",
+        headers=teacher_headers,
+    )
+    assert teacher_analytics.status_code == 200, teacher_analytics.text
+    assert teacher_analytics.json()["students"] == 1
+
+    outsider_teacher_analytics = test_client.get(
+        f"/api/analytics/teacher-v2/{subject_id}",
+        headers=outsider_teacher_headers,
+    )
+    assert outsider_teacher_analytics.status_code == 403
+
+    student_teacher_analytics = test_client.get(
+        f"/api/analytics/teacher-v2/{subject_id}",
+        headers=student_headers,
+    )
+    assert student_teacher_analytics.status_code == 403
+
+    admin_headers = login(
+        test_client, "assignment-admin@example.com", "Admin@123"
+    )
+    admin_analytics = test_client.get(
+        "/api/analytics/admin",
+        headers=admin_headers,
+    )
+    assert admin_analytics.status_code == 200, admin_analytics.text
+    assert admin_analytics.json()["academic"]["subjects"] == 1
+
+    student_admin_analytics = test_client.get(
+        "/api/analytics/admin",
+        headers=student_headers,
+    )
+    assert student_admin_analytics.status_code == 403
