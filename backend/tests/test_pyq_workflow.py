@@ -91,3 +91,37 @@ def test_bulk_pyq_import_maps_questions_and_recalculates_weightage(client):
     assert data["questions"] == 2
     assert len(data["unit_weightage"]) == 2
     assert all(row["topic"] for row in data["mapping"])
+
+
+def test_pyq_analytics_exposes_evidence_based_weightage_and_trends(client):
+    test_client, subject_id = client
+    headers = login(test_client)
+    first = test_client.post("/api/pyq/questions", headers=headers, json={
+        "subject_id": subject_id,
+        "year": 2024,
+        "question_no": "1",
+        "question_text": "Explain arrays and searching",
+        "marks": 10,
+    })
+    assert first.status_code == 200, first.text
+    second = test_client.post("/api/pyq/questions", headers=headers, json={
+        "subject_id": subject_id,
+        "year": 2025,
+        "question_no": "1",
+        "question_text": "Explain arrays and searching",
+        "marks": 10,
+    })
+    assert second.status_code == 200, second.text
+
+    response = test_client.get(f"/api/pyq/analytics-v2/{subject_id}", headers=headers)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["total_marks"] == 20
+    assert data["unit_weightage"][0]["percentage"] == 100
+    assert data["year_trend"] == [
+        {"year": 2024, "marks": 10, "questions": 1},
+        {"year": 2025, "marks": 10, "questions": 1},
+    ]
+    assert data["repeated"][0]["count"] == 2
+    assert data["repeated"][0]["years"] == [2024, 2025]
+    assert any("high priority" in item for item in data["recommendations"])
