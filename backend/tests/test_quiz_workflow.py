@@ -51,8 +51,10 @@ def client():
         password_hash=pwd.hash("Student@123"),
         role="STUDENT",
     )
+    db.add_all([subject, admin, student])
+    db.flush()
     topic = Topic(subject_id=subject.id, unit_number=1, topic_name='Arrays', sequence_order=1, estimated_hours=2, status='ACTIVE')
-    db.add_all([subject, admin, student, topic])
+    db.add(topic)
     db.flush()
     db.add(
         Enrollment(
