@@ -310,6 +310,10 @@ async def upload_resource_v2(subject_id: int, title: str, resource_type: str = "
     if not can_access_subject(db, u, subject_id):
         raise HTTPException(403, "Subject access denied")
     data = await file.read()
+    allowed = {"pdf", "docx", "pptx", "txt", "md", "csv", "json", "py", "java", "js", "ts", "html", "css"}
+    ext = file.filename.lower().rsplit(".", 1)[-1] if "." in file.filename else ""
+    if ext not in allowed:
+        raise HTTPException(415, "Unsupported file type")
     if len(data) > 20 * 1024 * 1024:
         raise HTTPException(413, "Maximum file size is 20 MB")
     latest = db.scalar(select(Resource).where(Resource.subject_id == subject_id, Resource.title == title)
