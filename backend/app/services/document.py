@@ -46,3 +46,16 @@ def extract_sections(filename:str,data:bytes)->tuple[list[dict],int]:
 def extract_text(filename:str,data:bytes)->tuple[str,int]:
     sections,pages=extract_sections(filename,data)
     return normalize_text('\n\n'.join(x['text'] for x in sections)),pages
+
+def extract_chunks(filename:str,data:bytes,size:int=1200,overlap:int=180)->tuple[list[dict],int]:
+    sections,pages=extract_sections(filename,data)
+    chunks=[]
+    for section in sections:
+        text=normalize_text(section.get('text',''))
+        for chunk in chunk_text(text,size=size,overlap=overlap):
+            chunks.append({
+                'text':chunk,
+                'page':section.get('page'),
+                'section':section.get('section') or 'document',
+            })
+    return chunks,pages
