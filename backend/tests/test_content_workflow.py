@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from app.api.routes import pwd
 from app.db.session import Base, get_db
 from app.main import app
-from app.models.models import Content, Department, Enrollment, Semester, Subject, User, TeacherSubject, Topic
+from app.models.models import Content, Department, Enrollment, Semester, Subject, User, TeacherSubject, Topic, GeneratedArtifact
 
 
 @pytest.fixture()
@@ -217,3 +217,69 @@ def test_content_status_transitions_reject_skipping_review(client):
     approved = test_client.patch(f"/api/content/{content_id}/status",
                                  headers=admin_headers, json={"status": "APPROVED"})
     assert approved.status_code == 200
+
+
+def test_student_cannot_download_unpublished_artifact(client, monkeypatch):
+    test_client, subject_id = client
+    teacher_headers = login(test_client, "content-teacher@example.com", "Teacher@123")
+    student_headers = login(test_client, "content-student@example.com", "Student@123")
+
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        content = Content(
+            subject_id=subject_id,
+            title="Private PPT",
+            content_type="PPT",
+            body="Private generated artifact",
+            status="IN_REVIEW",
+            version=1,
+            created_by=1,
+        )
+        session.add(content)
+        session.flush()
+        artifact = GeneratedArtifact(
+            subject_id=subject_id,
+            content_id=content.id,
+            title="Private PPT",
+            artifact_type="PPT",
+            storage_key="artifacts/private.pptx",
+            created_by=1,
+        )
+        session.add(artifact)
+        session.commit()
+        artifact_id = artifact.id
+        content_id = content.id
+    finally:
+        session.close()
+
+    monkeypatch.setattr(
+        "app.api.extended_routes.get_object",
+        lambda key: b"private pptx",
+    )
+
+    blocked = test_client.get(
+        f"/api/artifacts/{artifact_id}/download",
+        headers=student_headers,
+    )
+    assert blocked.status_code == 403
+
+    published = test_client.patch(
+        f"/api/content/{content_id}/status",
+        headers=teacher_headers,
+        json={"status": "APPROVED"},
+    )
+    assert published.status_code == 200
+
+    published = test_client.patch(
+        f"/api/content/{content_id}/status",
+        headers=teacher_headers,
+        json={"status": "PUBLISHED"},
+    )
+    assert published.status_code == 200
+
+    allowed = test_client.get(
+        f"/api/artifacts/{artifact_id}/download",
+        headers=student_headers,
+    )
+    assert allowed.status_code == 200
+    assert allowed.content == b"private pptx"
