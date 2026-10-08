@@ -675,18 +675,87 @@ def pyq_analytics_v2(subject_id: int, db: Session = Depends(get_db), u=Depends(c
         raise HTTPException(403, "Subject access denied")
     qs = db.scalars(select(PYQQuestion).where(PYQQuestion.subject_id == subject_id)).all()
     topics = {x.id: x for x in db.scalars(select(Topic).where(Topic.subject_id == subject_id)).all()}
-    by_unit, by_year, freq = defaultdict(float), defaultdict(float), Counter()
+    by_unit = defaultdict(lambda: {"marks": 0.0, "questions": 0})
+    by_year = defaultdict(lambda: {"marks": 0.0, "questions": 0})
+    freq = Counter()
+    frequency_years = defaultdict(set)
+    mapping = []
+
     for q in qs:
-        if q.unit_number: by_unit[q.unit_number] += q.marks
-        if q.year: by_year[q.year] += q.marks
-        freq[q.frequency_key or normalize_key(q.question_text)] += 1
+        marks = float(q.marks or 0)
+        if q.unit_number:
+            by_unit[q.unit_number]["marks"] += marks
+            by_unit[q.unit_number]["questions"] += 1
+        if q.year:
+            by_year[q.year]["marks"] += marks
+            by_year[q.year]["questions"] += 1
+        key = q.frequency_key or normalize_key(q.question_text)
+        freq[key] += 1
+        if q.year:
+            frequency_years[key].add(q.year)
+        mapping.append({
+            "id": q.id,
+            "year": q.year,
+            "question": q.question_text,
+            "marks": marks,
+            "topic": topics.get(q.topic_id).topic_name if q.topic_id in topics else None,
+            "unit": q.unit_number,
+            "confidence": q.mapping_confidence,
+        })
+
+    total_marks = sum(float(q.marks or 0) for q in qs)
+    unit_weightage = [
+        {
+            "unit": unit,
+            "marks": round(data["marks"], 2),
+            "questions": data["questions"],
+            "percentage": round(data["marks"] * 100 / total_marks, 2) if total_marks else 0,
+        }
+        for unit, data in sorted(by_unit.items())
+    ]
+    year_trend = [
+        {
+            "year": year,
+            "marks": round(data["marks"], 2),
+            "questions": data["questions"],
+        }
+        for year, data in sorted(by_year.items())
+    ]
+    repeated = [
+        {
+            "question": key,
+            "count": count,
+            "years": sorted(frequency_years[key]),
+            "marks": round(sum(float(q.marks or 0) for q in qs
+                               if (q.frequency_key or normalize_key(q.question_text)) == key), 2),
+        }
+        for key, count in sorted(freq.items(), key=lambda x: (-x[1], x[0]))
+        if count > 1
+    ][:20]
+
+    recommendations = []
+    for row in unit_weightage:
+        if row["percentage"] >= 30:
+            recommendations.append(
+                f"Unit {row['unit']} is high priority based on {row['percentage']}% of historical PYQ marks."
+            )
+        elif row["percentage"] >= 15:
+            recommendations.append(
+                f"Unit {row['unit']} has moderate priority based on {row['percentage']}% of historical PYQ marks."
+            )
+    if repeated:
+        recommendations.append(
+            f"{len(repeated)} question pattern(s) repeat in the available PYQ data; prioritize repeated patterns for revision."
+        )
+
     return {
         "questions": len(qs),
-        "unit_weightage": [{"unit": k, "marks": v} for k, v in sorted(by_unit.items())],
-        "year_trend": [{"year": k, "marks": v} for k, v in sorted(by_year.items())],
-        "repeated": [{"question": k, "count": v} for k, v in sorted(freq.items(), key=lambda x: -x[1]) if v > 1][:20],
-        "mapping": [{"question": q.question_text, "topic": topics.get(q.topic_id).topic_name if q.topic_id in topics else None,
-                     "confidence": q.mapping_confidence} for q in qs],
+        "total_marks": round(total_marks, 2),
+        "unit_weightage": unit_weightage,
+        "year_trend": year_trend,
+        "repeated": repeated,
+        "mapping": mapping,
+        "recommendations": recommendations,
     }
 
 
