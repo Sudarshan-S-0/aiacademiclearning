@@ -253,6 +253,48 @@ def generate_plan(p:AIPlanRequest,db:Session=Depends(get_db),u=Depends(require_r
 def get_plan_data(db,subject_id):
     rows=db.execute(select(TeachingPlan,Topic).join(Topic,Topic.id==TeachingPlan.topic_id).where(TeachingPlan.subject_id==subject_id).order_by(TeachingPlan.planned_week,Topic.sequence_order)).all()
     return [{"id":p.id,"topic_id":p.topic_id,"topic":t.topic_name,"week":p.planned_week,"planned_hours":p.planned_hours,"actual_hours":p.actual_hours,"status":p.status,"note":p.teacher_note} for p,t in rows]
+
+def rebuild_teaching_plan(db,subject_id):
+    subject=db.get(Subject,subject_id)
+    if not subject:
+        raise HTTPException(404,"Subject not found")
+    completed=db.scalars(select(TeachingPlan).where(
+        TeachingPlan.subject_id==subject_id,
+        TeachingPlan.status=="COMPLETED",
+    )).all()
+    occupied={week:0.0 for week in range(1,subject.weeks+1)}
+    for item in completed:
+        if 1 <= item.planned_week <= subject.weeks:
+            occupied[item.planned_week]=occupied.get(item.planned_week,0.0)+float(item.planned_hours or 0)
+
+    for old in db.scalars(select(TeachingPlan).where(
+        TeachingPlan.subject_id==subject_id,
+        TeachingPlan.status!="COMPLETED",
+    )).all():
+        db.delete(old)
+    db.flush()
+
+    topics=db.scalars(select(Topic).where(
+        Topic.subject_id==subject_id,
+        Topic.status=="ACTIVE",
+        Topic.completed.is_(False),
+    ).order_by(Topic.sequence_order,Topic.id)).all()
+
+    for topic in topics:
+        remaining=max(float(topic.estimated_hours or 0),0.0)
+        for week in range(1,subject.weeks+1):
+            if remaining<=0:
+                break
+            capacity=max(float(subject.hours_per_week)-occupied.get(week,0.0),0.0)
+            if capacity<=0:
+                continue
+            hours=min(remaining,capacity)
+            db.add(TeachingPlan(subject_id=subject_id,topic_id=topic.id,
+                                planned_week=week,planned_hours=hours,status="PLANNED"))
+            occupied[week]=occupied.get(week,0.0)+hours
+            remaining-=hours
+    return get_plan_data(db,subject_id)
+
 @router.get("/teaching-plan/{subject_id}")
 def teaching_plan(subject_id:int,db:Session=Depends(get_db),u=Depends(current_user)):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
@@ -260,14 +302,45 @@ def teaching_plan(subject_id:int,db:Session=Depends(get_db),u=Depends(current_us
 @router.post("/teaching-plan/{subject_id}/update")
 def update_plan(subject_id:int,p:PlanAction,db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
-    plan=db.scalar(select(TeachingPlan).where(TeachingPlan.subject_id==subject_id,TeachingPlan.topic_id==p.topic_id,TeachingPlan.status!="COMPLETED"))
+    plan=db.scalar(select(TeachingPlan).where(
+        TeachingPlan.subject_id==subject_id,
+        TeachingPlan.topic_id==p.topic_id,
+        TeachingPlan.status!="COMPLETED",
+    ))
     if not plan:raise HTTPException(404,"Plan item not found")
-    if p.action=="complete":plan.status="COMPLETED";plan.actual_hours=p.value or plan.planned_hours
-    elif p.action=="postpone":plan.planned_week=p.new_week or plan.planned_week+1
-    elif p.action=="duration":plan.planned_hours=float(p.value or plan.planned_hours)
-    elif p.action=="note":plan.teacher_note=p.note
-    else:raise HTTPException(400,"Supported actions: complete, postpone, duration, note")
-    audit(db,u,f"PLAN_{p.action.upper()}","TEACHING_PLAN",plan.id);db.commit();return get_plan_data(db,subject_id)
+    topic=db.get(Topic,p.topic_id)
+    if not topic or topic.subject_id!=subject_id:raise HTTPException(404,"Topic not found")
+
+    if p.action=="complete":
+        plan.status="COMPLETED"
+        plan.actual_hours=p.value or plan.planned_hours
+        topic.completed=True
+    elif p.action=="duration":
+        new_hours=float(p.value or topic.estimated_hours)
+        if new_hours<=0:raise HTTPException(400,"Duration must be positive")
+        topic.estimated_hours=new_hours
+    elif p.action=="postpone":
+        subject=db.get(Subject,subject_id)
+        target=p.new_week or plan.planned_week+1
+        if target<1 or target>subject.weeks:
+            raise HTTPException(400,"Target week is outside the subject schedule")
+        max_order=db.scalar(select(func.max(Topic.sequence_order)).where(Topic.subject_id==subject_id)) or 0
+        topic.sequence_order=max_order+1
+    elif p.action=="note":
+        plan.teacher_note=p.note
+        audit(db,u,"PLAN_NOTE","TEACHING_PLAN",plan.id)
+        db.commit()
+        return get_plan_data(db,subject_id)
+    else:
+        raise HTTPException(400,"Supported actions: complete, postpone, duration, note")
+
+    result=rebuild_teaching_plan(db,subject_id)
+    audit(db,u,f"PLAN_{p.action.upper()}","TEACHING_PLAN",plan.id,json.dumps({
+        "topic_id":p.topic_id,"value":p.value,"new_week":p.new_week,
+    }))
+    db.commit()
+    return result
+
 @router.post("/quizzes")
 def create_quiz(p:QuizCreate,db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
