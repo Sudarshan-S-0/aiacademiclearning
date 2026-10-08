@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from app.api.routes import pwd
 from app.db.session import Base, get_db
 from app.main import app
-from app.models.models import User
+from app.models.models import User, Department, Semester, Subject, TeacherSubject, Resource
 
 
 @pytest.fixture()
@@ -94,3 +94,58 @@ def test_audit_log_is_admin_only_and_records_login(audit_client):
         "/api/admin/audit-export", headers=teacher_headers
     )
     assert teacher_export.status_code == 403
+
+
+def test_resource_status_change_is_audited(audit_client):
+    admin_headers = login(audit_client, "audit-admin@example.com", "Admin@123")
+
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        department = Department(code="AUD2", name="Audit Department 2")
+        session.add(department)
+        session.flush()
+        semester = Semester(
+            department_id=department.id,
+            academic_year="2026-27",
+            semester_number=8,
+            regulation="TEST",
+        )
+        session.add(semester)
+        session.flush()
+        subject = Subject(
+            semester_id=semester.id,
+            code="AUD802",
+            name="Audit Subject 2",
+        )
+        session.add(subject)
+        session.flush()
+        resource = Resource(
+            subject_id=subject.id,
+            uploaded_by=None,
+            title="Audited Resource",
+            resource_type="PDF",
+            status="DRAFT",
+            version=1,
+            extracted_text="audit",
+        )
+        session.add(resource)
+        session.commit()
+        subject_id = subject.id
+        resource_id = resource.id
+    finally:
+        session.close()
+
+    updated = audit_client.patch(
+        f"/api/resources/{resource_id}/status?status=APPROVED",
+        headers=admin_headers,
+    )
+    assert updated.status_code == 200, updated.text
+
+    logs = audit_client.get("/api/audit", headers=admin_headers)
+    assert logs.status_code == 200, logs.text
+    assert any(
+        row["action"] == "RESOURCE_APPROVED"
+        and row["entity"] == "RESOURCE"
+        and row["entity_id"] == resource_id
+        for row in logs.json()
+    )
