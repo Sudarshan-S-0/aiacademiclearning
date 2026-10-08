@@ -78,3 +78,56 @@ def test_resource_ai_publication_gates(monkeypatch):
     app.dependency_overrides.clear()
     engine.dispose()
     if os.path.exists(db_path): os.remove(db_path)
+
+
+def test_resource_chunks_are_persisted_with_citations(monkeypatch):
+    db_path=tempfile.mktemp(suffix=".db")
+    engine=create_engine(f"sqlite:///{db_path}")
+    Base.metadata.create_all(engine)
+    SessionLocal=sessionmaker(bind=engine)
+    db=SessionLocal()
+    d=Department(code="CH",name="Chunks")
+    db.add(d);db.flush()
+    s=Semester(department_id=d.id,academic_year="2026-27",semester_number=1,regulation="TEST")
+    db.add(s);db.flush()
+    subject=Subject(semester_id=s.id,code="CH101",name="Chunk Subject")
+    db.add(subject);db.flush()
+    teacher=User(full_name="Chunk Teacher",email="chunk.teacher@example.com",password_hash=pwd.hash("Teacher@123"),role="TEACHER")
+    db.add(teacher);db.flush()
+    db.add(TeacherSubject(teacher_id=teacher.id,subject_id=subject.id,academic_year="2026-27"))
+    db.commit()
+    subject_id=subject.id
+    db.close()
+
+    def override():
+        db=SessionLocal()
+        try: yield db
+        finally: db.close()
+    app.dependency_overrides[get_db]=override
+    monkeypatch.setattr("app.api.routes.put_object",lambda *a,**k:True)
+    monkeypatch.setattr("app.api.routes.upsert_chunks",lambda *a,**k:True)
+
+    with TestClient(app) as client:
+        response=client.post("/api/auth/login",json={"email":"chunk.teacher@example.com","password":"Teacher@123"})
+        assert response.status_code==200,response.text
+        headers={"Authorization":f"Bearer {response.json()['access_token']}"}
+        upload=client.post(
+            f"/api/resources?subject_id={subject_id}&title=Notes&resource_type=REFERENCE",
+            headers=headers,
+            files={"file":("notes.txt",b"Machine learning learns patterns from data.\n\nClassification predicts categories.","text/plain")},
+        )
+        assert upload.status_code==200,upload.text
+        data=upload.json()
+        assert data["chunks"]>=1
+
+        chunks=client.get(f"/api/resources/{data['id']}/chunks",headers=headers)
+        assert chunks.status_code==200,chunks.text
+        rows=chunks.json()
+        assert rows
+        assert rows[0]["page"]==1
+        assert rows[0]["section"]=="document"
+        assert rows[0]["qdrant_point_id"]
+
+    app.dependency_overrides.clear()
+    engine.dispose()
+    if os.path.exists(db_path): os.remove(db_path)
