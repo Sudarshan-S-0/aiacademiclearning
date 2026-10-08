@@ -101,19 +101,50 @@ def test_completed_topic_is_preserved_when_plan_is_regenerated(client):
     assert any(row["topic_id"] == first_topic and row["status"] == "COMPLETED" for row in rows)
 
 
-def test_duration_change_updates_plan_item(client):
+def test_duration_change_recalculates_remaining_schedule(client):
     test_client, subject_id = client
     headers = login(test_client)
     generated = test_client.post("/api/teaching-plan/generate",
                                  headers=headers, json={"subject_id": subject_id})
     assert generated.status_code == 200, generated.text
-    target_topic = generated.json()[0]["topic_id"]
+    rows = generated.json()
+    first_topic = rows[0]["topic_id"]
+    second_topic = rows[1]["topic_id"]
 
     response = test_client.post(f"/api/teaching-plan/{subject_id}/update",
                                 headers=headers,
-                                json={"topic_id": target_topic, "action": "duration", "value": 3})
+                                json={"topic_id": first_topic, "action": "duration", "value": 2})
     assert response.status_code == 200, response.text
     rows = response.json()
-    target = [row for row in rows if row["topic_id"] == target_topic]
-    assert target
-    assert target[0]["planned_hours"] == 3
+
+    first = [row for row in rows if row["topic_id"] == first_topic]
+    second = [row for row in rows if row["topic_id"] == second_topic]
+    assert first and second
+    assert first[0]["week"] == 1
+    assert first[0]["planned_hours"] == 2
+    assert second[0]["week"] == 1
+    assert second[0]["planned_hours"] == 4
+
+
+def test_completing_topic_locks_it_and_recalculates_remaining_schedule(client):
+    test_client, subject_id = client
+    headers = login(test_client)
+    generated = test_client.post("/api/teaching-plan/generate",
+                                 headers=headers, json={"subject_id": subject_id})
+    assert generated.status_code == 200, generated.text
+    first_topic = generated.json()[0]["topic_id"]
+
+    response = test_client.post(f"/api/teaching-plan/{subject_id}/update",
+                                headers=headers,
+                                json={"topic_id": first_topic, "action": "complete", "value": 4})
+    assert response.status_code == 200, response.text
+    rows = response.json()
+
+    completed = [row for row in rows if row["topic_id"] == first_topic]
+    assert completed
+    assert completed[0]["status"] == "COMPLETED"
+    assert completed[0]["actual_hours"] == 4
+
+    remaining = [row for row in rows if row["topic_id"] != first_topic]
+    assert remaining
+    assert all(row["week"] >= 2 for row in remaining)
