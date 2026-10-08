@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from app.api.routes import pwd
 from app.db.session import Base, get_db
 from app.main import app
-from app.models.models import Department, Enrollment, Semester, Subject, TeacherSubject, User
+from app.models.models import Department, Semester, Subject, User
 
 
 def test_admin_only_user_and_academic_management():
@@ -21,14 +21,17 @@ def test_admin_only_user_and_academic_management():
     department = Department(code="SEC", name="Security")
     db.add(department)
     db.flush()
+    department_id = department.id
+
     semester = Semester(
-        department_id=department.id,
+        department_id=department_id,
         academic_year="2026-27",
         semester_number=1,
         regulation="TEST",
     )
     db.add(semester)
     db.flush()
+    semester_id = semester.id
 
     admin = User(full_name="Sec Admin", email="sec-admin@example.com",
                  password_hash=pwd.hash("Admin@123"), role="ADMIN")
@@ -80,7 +83,7 @@ def test_admin_only_user_and_academic_management():
         assert client.post("/api/departments", headers=student_headers, json=department_payload).status_code == 403
 
         semester_payload = {
-            "department_id": department.id,
+            "department_id": department_id,
             "academic_year": "2026-27",
             "semester_number": 2,
             "regulation": "TEST",
@@ -88,12 +91,12 @@ def test_admin_only_user_and_academic_management():
         assert client.post("/api/semesters", headers=teacher_headers, json=semester_payload).status_code == 403
         assert client.post("/api/semesters", headers=student_headers, json=semester_payload).status_code == 403
 
-        section_payload = {"semester_id": semester.id, "name": "A"}
+        section_payload = {"semester_id": semester_id, "name": "A"}
         assert client.post("/api/sections", headers=teacher_headers, json=section_payload).status_code == 403
         assert client.post("/api/sections", headers=student_headers, json=section_payload).status_code == 403
 
         subject_payload = {
-            "semester_id": semester.id,
+            "semester_id": semester_id,
             "code": "SEC101",
             "name": "Security Subject",
             "weeks": 16,
@@ -119,15 +122,19 @@ def test_teacher_and_student_cannot_assign_or_enroll():
     department = Department(code="SECX", name="Security X")
     db.add(department)
     db.flush()
+    department_id = department.id
+
     semester = Semester(
-        department_id=department.id,
+        department_id=department_id,
         academic_year="2026-27",
         semester_number=1,
         regulation="TEST",
     )
     db.add(semester)
     db.flush()
-    subject = Subject(semester_id=semester.id, code="SECX101", name="Secure Systems")
+    semester_id = semester.id
+
+    subject = Subject(semester_id=semester_id, code="SECX101", name="Secure Systems")
     teacher = User(full_name="Teacher X", email="teacher-x@example.com",
                    password_hash=pwd.hash("Teacher@123"), role="TEACHER")
     student = User(full_name="Student X", email="student-x@example.com",
