@@ -121,7 +121,7 @@ def test_resource_status_change_is_audited(audit_client):
         session.flush()
         resource = Resource(
             subject_id=subject.id,
-            uploaded_by=None,
+            uploaded_by=1,
             title="Audited Resource",
             resource_type="PDF",
             status="DRAFT",
