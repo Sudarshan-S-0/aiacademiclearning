@@ -61,8 +61,18 @@ def test_resource_ai_publication_gates(monkeypatch):
         assert generated.json()["status"]=="IN_REVIEW"
         sh=login("wf.student@example.com","Student@123")
         assert client.get(f"/api/content?subject_id={subject_id}",headers=sh).json()==[]
-        published=client.patch(f"/api/content/{generated.json()['id']}/status",headers=th,json={"status":"PUBLISHED"})
-        assert published.status_code==200
+        approved_content=client.patch(
+            f"/api/content/{generated.json()['id']}/status",
+            headers=th,
+            json={"status":"APPROVED"},
+        )
+        assert approved_content.status_code==200, approved_content.text
+        published=client.patch(
+            f"/api/content/{generated.json()['id']}/status",
+            headers=th,
+            json={"status":"PUBLISHED"},
+        )
+        assert published.status_code==200, published.text
         visible=client.get(f"/api/content?subject_id={subject_id}",headers=sh)
         assert [x["title"] for x in visible.json()]==["Notes"]
     app.dependency_overrides.clear()
