@@ -378,6 +378,43 @@ def compare_syllabus(p: SyllabusCompareRequest, db: Session = Depends(get_db), u
     for k, v in old_map.items():
         if k not in new_map: changes.append(("REMOVED", v, None))
     version = p.version or ((active.version + 1) if active else 1)
+
+    # Keep the normalized Topic table synchronized with the active syllabus version.
+    # Existing topics retain completion/progress; removed topics are archived and new
+    # topics become active in the order supplied by the teacher.
+    subject = db.get(Subject, p.subject_id)
+    if not subject:
+        raise HTTPException(404, "Subject not found")
+    existing = db.scalars(select(Topic).where(Topic.subject_id == p.subject_id)).all()
+    by_key = {normalize_key(t.topic_name): t for t in existing}
+    active_keys = set()
+    for index, topic_name in enumerate(new, start=1):
+        key = normalize_key(topic_name)
+        active_keys.add(key)
+        topic = by_key.get(key)
+        if topic:
+            topic.status = "ACTIVE"
+            topic.sequence_order = index
+            topic.version = version
+        else:
+            unit_match = re.search(r"\bunit\s*(\d+)", topic_name, re.I)
+            unit_number = int(unit_match.group(1)) if unit_match else 1
+            topic = Topic(
+                subject_id=p.subject_id,
+                unit_number=unit_number,
+                topic_name=topic_name,
+                sequence_order=index,
+                estimated_hours=1.0,
+                version=version,
+                status="ACTIVE",
+                completed=False,
+            )
+            db.add(topic)
+    for topic in existing:
+        if normalize_key(topic.topic_name) not in active_keys:
+            topic.status = "ARCHIVED"
+            topic.version = version
+
     if active: active.status = "ARCHIVED"
     sv = SyllabusVersion(subject_id=p.subject_id, version=version, source_resource_id=p.source_resource_id,
                          status="ACTIVE", summary=json.dumps({"topics": new}))
