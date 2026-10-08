@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from app.api.routes import pwd
 from app.db.session import Base, get_db
 from app.main import app
-from app.models.models import Department, Semester, Subject, Topic, User
+from app.models.models import Department, Semester, Subject, Topic, User, TeacherSubject
 
 
 @pytest.fixture()
@@ -33,6 +33,7 @@ def client():
                    password_hash=pwd.hash("Teacher@123"), role="TEACHER")
     db.add_all([subject, teacher])
     db.flush()
+    db.add(TeacherSubject(teacher_id=teacher.id, subject_id=subject.id, academic_year="2026-27"))
     db.add_all([
         Topic(subject_id=subject.id, unit_number=1, topic_name="Arrays",
               sequence_order=1, estimated_hours=4, status="ACTIVE"),
