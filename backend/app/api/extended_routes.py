@@ -809,6 +809,103 @@ def student_analytics(db: Session = Depends(get_db), u=Depends(require_roles("ST
             "average_percentage": round(score * 100 / maximum, 2) if maximum else 0}
 
 
+@router.get("/analytics/student-v2")
+def student_analytics_v2(db: Session = Depends(get_db), u=Depends(require_roles("STUDENT"))):
+    enrolled = db.scalars(select(Enrollment).where(Enrollment.student_id == u.id)).all()
+    subject_ids = [e.subject_id for e in enrolled]
+    if not subject_ids:
+        return {"subjects": [], "overall": {"activities": 0, "completed": 0, "score": 0, "max_score": 0, "percentage": 0}}
+
+    rows = db.scalars(
+        select(Progress).where(
+            Progress.student_id == u.id,
+            Progress.subject_id.in_(subject_ids),
+        ).order_by(Progress.id)
+    ).all()
+
+    topics = db.scalars(
+        select(Topic).where(
+            Topic.subject_id.in_(subject_ids),
+            Topic.status == "ACTIVE",
+        )
+    ).all()
+    topic_map = {t.id: t for t in topics}
+    subjects = db.scalars(select(Subject).where(Subject.id.in_(subject_ids))).all()
+    subject_map = {s.id: s for s in subjects}
+
+    subject_stats = {}
+    topic_stats = {}
+    for p in rows:
+        subject_stats.setdefault(p.subject_id, {"activities": 0, "completed": 0, "score": 0.0, "max_score": 0.0})
+        s = subject_stats[p.subject_id]
+        s["activities"] += 1
+        s["completed"] += int(bool(p.completed))
+        s["score"] += p.score
+        s["max_score"] += p.max_score
+
+        if p.topic_id is not None and p.topic_id in topic_map:
+            key = (p.subject_id, p.topic_id)
+            topic_stats.setdefault(key, {"activities": 0, "completed": 0, "score": 0.0, "max_score": 0.0})
+            t = topic_stats[key]
+            t["activities"] += 1
+            t["completed"] += int(bool(p.completed))
+            t["score"] += p.score
+            t["max_score"] += p.max_score
+
+    def percentage(item):
+        return round(item["score"] * 100 / item["max_score"], 2) if item["max_score"] else 0
+
+    subject_output = []
+    for subject_id in subject_ids:
+        s = subject_stats.get(subject_id, {"activities": 0, "completed": 0, "score": 0.0, "max_score": 0.0})
+        subject_output.append({
+            "subject_id": subject_id,
+            "subject": subject_map[subject_id].name if subject_id in subject_map else None,
+            "activities": s["activities"],
+            "completed": s["completed"],
+            "score": s["score"],
+            "max_score": s["max_score"],
+            "percentage": percentage(s),
+        })
+
+    topic_output = []
+    for (subject_id, topic_id), t in topic_stats.items():
+        topic = topic_map[topic_id]
+        pct = percentage(t)
+        recommendation = "Keep practicing this topic."
+        if pct < 50:
+            recommendation = "Priority revision: review published material and attempt another quiz."
+        elif pct < 70:
+            recommendation = "Revise this topic and practice more questions."
+        topic_output.append({
+            "subject_id": subject_id,
+            "subject": subject_map[subject_id].name,
+            "topic_id": topic_id,
+            "topic": topic.topic_name,
+            "activities": t["activities"],
+            "completed": t["completed"],
+            "score": t["score"],
+            "max_score": t["max_score"],
+            "percentage": pct,
+            "is_weak": pct < 70,
+            "recommendation": recommendation,
+        })
+
+    overall = {
+        "activities": len(rows),
+        "completed": sum(1 for x in rows if x.completed),
+        "score": sum(x.score for x in rows),
+        "max_score": sum(x.max_score for x in rows),
+    }
+    overall["percentage"] = percentage(overall)
+
+    return {
+        "subjects": subject_output,
+        "topics": sorted(topic_output, key=lambda x: (not x["is_weak"], x["percentage"])),
+        "overall": overall,
+    }
+
+
 @router.get("/student/resources")
 def student_resources(db: Session = Depends(get_db), u=Depends(require_roles("STUDENT"))):
     ids = select(Enrollment.subject_id).where(Enrollment.student_id == u.id)
