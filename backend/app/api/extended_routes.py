@@ -508,10 +508,14 @@ def generate_content(p: GenerateRequest, db: Session = Depends(get_db), u=Depend
 
 
 @router.get("/content")
-def list_content(subject_id: int, db: Session = Depends(get_db), u=Depends(require_roles("ADMIN", "TEACHER"))):
+def list_content(subject_id: int, db: Session = Depends(get_db), u=Depends(current_user)):
     if not can_access_subject(db, u, subject_id):
         raise HTTPException(403, "Subject access denied")
-    rows = db.scalars(select(Content).where(Content.subject_id == subject_id).order_by(Content.id.desc())).all()
+    q = select(Content).where(Content.subject_id == subject_id)
+    # Students may read content only after teacher approval and publication.
+    if u.role == "STUDENT":
+        q = q.where(Content.status == "PUBLISHED")
+    rows = db.scalars(q.order_by(Content.id.desc())).all()
     return [{
         "id": c.id, "subject_id": c.subject_id, "topic_id": c.topic_id,
         "title": c.title, "type": c.content_type, "body": c.body,
