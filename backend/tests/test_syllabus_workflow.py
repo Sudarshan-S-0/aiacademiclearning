@@ -46,6 +46,8 @@ def client():
         role="ADMIN",
     )
     db.add_all([subject, admin])
+    db.flush()
+    subject_id = subject.id
     db.commit()
     db.close()
 
@@ -58,7 +60,7 @@ def client():
 
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as test_client:
-        yield test_client, subject.id
+        yield test_client, subject_id
 
     app.dependency_overrides.clear()
     engine.dispose()
