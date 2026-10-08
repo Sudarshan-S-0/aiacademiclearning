@@ -55,7 +55,7 @@ def health():return {"status":"ok","service":"ai-academic-learning"}
 @router.post("/auth/register")
 def register(p:UserCreate,db:Session=Depends(get_db)):
     role=p.role.upper()
-    if role not in {"ADMIN","TEACHER","STUDENT"}:raise HTTPException(400,"Invalid role")
+    if role != "STUDENT":raise HTTPException(403,"Public registration is limited to student accounts")
     if db.scalar(select(User).where(User.email==p.email)):raise HTTPException(409,"Email already exists")
     u=User(full_name=p.full_name,email=p.email,password_hash=pwd.hash(p.password),role=role);db.add(u);db.commit();db.refresh(u);return {"id":u.id,"email":u.email,"role":u.role}
 @router.post("/auth/login")
@@ -115,6 +115,9 @@ def update_topic(topic_id:int,p:TopicUpdate,db:Session=Depends(get_db),u=Depends
 async def upload_resource(subject_id:int,title:str|None=None,resource_type:str="REFERENCE",file:UploadFile=File(...),db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
     data=await file.read()
+    allowed={"pdf","docx","pptx","txt","md","csv","json","py","java","js","ts","html","css"}
+    ext=file.filename.lower().rsplit(".",1)[-1] if "." in file.filename else ""
+    if ext not in allowed:raise HTTPException(415,"Unsupported file type")
     if len(data)>20*1024*1024:raise HTTPException(413,"Maximum file size is 20 MB")
     key=f"subjects/{subject_id}/resources/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{u.id}_{file.filename.replace(' ','_')}"
     text,pages=extract_text(file.filename,data);text=normalize_text(text);stored=put_object(key,data,file.content_type or "application/octet-stream")
