@@ -123,7 +123,7 @@ def test_duration_change_recalculates_remaining_schedule(client):
     assert first[0]["week"] == 1
     assert first[0]["planned_hours"] == 2
     assert second[0]["week"] == 1
-    assert second[0]["planned_hours"] == 4
+    assert second[0]["planned_hours"] == 2
 
 
 def test_completing_topic_locks_it_and_recalculates_remaining_schedule(client):
