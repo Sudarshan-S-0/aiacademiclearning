@@ -507,6 +507,19 @@ def generate_content(p: GenerateRequest, db: Session = Depends(get_db), u=Depend
             "sources": [x.get("citation") for x in contexts]}
 
 
+@router.get("/content")
+def list_content(subject_id: int, db: Session = Depends(get_db), u=Depends(require_roles("ADMIN", "TEACHER"))):
+    if not can_access_subject(db, u, subject_id):
+        raise HTTPException(403, "Subject access denied")
+    rows = db.scalars(select(Content).where(Content.subject_id == subject_id).order_by(Content.id.desc())).all()
+    return [{
+        "id": c.id, "subject_id": c.subject_id, "topic_id": c.topic_id,
+        "title": c.title, "type": c.content_type, "body": c.body,
+        "status": c.status, "version": c.version,
+        "generated_by_ai": c.generated_by_ai, "source_reference": c.source_reference,
+    } for c in rows]
+
+
 @router.get("/content/{content_id}")
 def get_content(content_id: int, db: Session = Depends(get_db), u=Depends(current_user)):
     c = db.get(Content, content_id)
