@@ -61,7 +61,7 @@ def register(p:UserCreate,db:Session=Depends(get_db)):
 @router.post("/auth/login")
 def login(p:Login,db:Session=Depends(get_db)):
     u=db.scalar(select(User).where(User.email==p.email))
-    if not u or not u.password_hash or not pwd.verify(p.password,u.password):raise HTTPException(401,"Invalid credentials")
+    if not u or not u.password_hash or not pwd.verify(p.password,u.password_hash):raise HTTPException(401,"Invalid credentials")
     audit(db,u,"LOGIN","AUTH",u.id)
     db.commit()
     return {"access_token":token_for(u),"token_type":"bearer","user":{"id":u.id,"name":u.full_name,"role":u.role}}
