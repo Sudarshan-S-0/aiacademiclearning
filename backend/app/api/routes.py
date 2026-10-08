@@ -11,7 +11,7 @@ from app.models.models import *
 from app.services.ai import build_rag_prompt,grounded_answer,gemini_generate
 from app.services.document import extract_text,normalize_text,chunk_text,extract_chunks
 from app.services.storage import put_object,get_object
-from app.services.qdrant import upsert_chunks
+from app.services.qdrant import upsert_chunks,search_chunks
 router=APIRouter(prefix="/api");pwd=CryptContext(schemes=["bcrypt"],deprecated="auto")
 class Login(BaseModel): email:EmailStr;password:str
 class UserCreate(BaseModel): full_name:str=Field(min_length=2);email:EmailStr;password:str=Field(min_length=8);role:str
@@ -172,8 +172,13 @@ def create_content(p:ContentCreate,db:Session=Depends(get_db),u=Depends(require_
 @router.post("/ai/ask")
 def ask_ai(p:AskRequest,db:Session=Depends(get_db),u=Depends(current_user)):
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
-    rs=db.scalars(select(Resource).where(Resource.subject_id==p.subject_id,Resource.status=="APPROVED")).all()
-    result=grounded_answer(p.question,[{"status":"APPROVED","source":r.title,"text":r.extracted_text or ""} for r in rs]);audit(db,u,"AI_ASK","SUBJECT",p.subject_id,p.question[:500]);db.commit();return result
+    hits=search_chunks(p.subject_id,p.question,top_k=8)
+    if hits:
+        contexts=[{"status":"APPROVED","source":h.get("source","resource"),"text":h.get("text",""),"citation":f"page {h['page']}, {h['section']}" if h.get("page") and h.get("section") else h.get("section") or ("page "+str(h["page"]) if h.get("page") else "resource chunk")} for h in hits]
+    else:
+        rs=db.scalars(select(Resource).where(Resource.subject_id==p.subject_id,Resource.status=="APPROVED")).all()
+        contexts=[{"status":"APPROVED","source":r.title,"text":r.extracted_text or ""} for r in rs]
+    result=grounded_answer(p.question,contexts);audit(db,u,"AI_ASK","SUBJECT",p.subject_id,p.question[:500]);db.commit();return result
 @router.post("/ai/prompt-preview")
 def ai_prompt_preview(question:str,subject_id:int,db:Session=Depends(get_db),u=Depends(current_user)):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
@@ -185,9 +190,14 @@ def generate_content(p:AIContentRequest,db:Session=Depends(get_db),u=Depends(req
     rs=db.scalars(select(Resource).where(Resource.subject_id==p.subject_id,Resource.status=="APPROVED")).all()
     if not rs:raise HTTPException(400,"Approve at least one academic resource before AI generation")
     topic=db.get(Topic,p.topic_id) if p.topic_id else None
-    prompt=build_rag_prompt(f"Create {p.content_type} titled '{p.title or p.content_type}' for topic '{topic.topic_name if topic else 'the subject'}'. {p.instructions or ''}",[{"status":"APPROVED","source":r.title,"text":r.extracted_text or ""} for r in rs])
+    query=f"Create {p.content_type} titled '{p.title or p.content_type}' for topic '{topic.topic_name if topic else 'the subject'}'. {p.instructions or ''}"
+    hits=search_chunks(p.subject_id,query,top_k=12)
+    contexts=[{"status":"APPROVED","source":h.get("source","resource"),"text":h.get("text",""),"citation":f"page {h['page']}, {h['section']}" if h.get("page") and h.get("section") else h.get("section") or ("page "+str(h["page"]) if h.get("page") else "resource chunk")} for h in hits]
+    if not contexts:
+        contexts=[{"status":"APPROVED","source":r.title,"text":r.extracted_text or ""} for r in rs]
+    prompt=build_rag_prompt(query,contexts)
     body=gemini_generate(prompt) or ("AI generation requires GEMINI_API_KEY. Approved-resource context is ready for generation.\n\n"+(rs[0].extracted_text or "")[:2500])
-    x=Content(subject_id=p.subject_id,topic_id=p.topic_id,title=p.title or f"AI {p.content_type}",content_type=p.content_type,body=body,status="IN_REVIEW",source_reference=", ".join(r.title for r in rs),generated_by_ai=True);db.add(x);db.flush();audit(db,u,"AI_GENERATE_CONTENT","CONTENT",x.id,p.content_type);db.commit();return {"id":x.id,"status":x.status,"body":x.body,"sources":[r.title for r in rs]}
+    x=Content(subject_id=p.subject_id,topic_id=p.topic_id,title=p.title or f"AI {p.content_type}",content_type=p.content_type,body=body,status="IN_REVIEW",source_reference=", ".join(sorted({x.get("source","resource") for x in contexts})),generated_by_ai=True);db.add(x);db.flush();audit(db,u,"AI_GENERATE_CONTENT","CONTENT",x.id,p.content_type);db.commit();return {"id":x.id,"status":x.status,"body":x.body,"sources":[r.title for r in rs]}
 @router.post("/pyq/questions")
 def add_pyq(p:PYQCreate,db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
