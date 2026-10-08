@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from app.api.routes import pwd
 from app.db.session import Base, get_db
 from app.main import app
-from app.models.models import Department, Enrollment, Semester, Subject, User
+from app.models.models import Department, Enrollment, Semester, Subject, User, Topic
 
 
 @pytest.fixture()
@@ -51,7 +51,8 @@ def client():
         password_hash=pwd.hash("Student@123"),
         role="STUDENT",
     )
-    db.add_all([subject, admin, student])
+    topic = Topic(subject_id=subject.id, unit_number=1, topic_name='Arrays', sequence_order=1, estimated_hours=2, status='ACTIVE')
+    db.add_all([subject, admin, student, topic])
     db.flush()
     db.add(
         Enrollment(
@@ -132,6 +133,7 @@ def test_quiz_lifecycle_and_student_publication_gate(client):
             "marks": 2,
             "correct_answer": "0",
             "options": ["0", "1", "2", "3"],
+            "topic_id": 1,
         },
     )
     assert question.status_code == 200, question.text
@@ -221,6 +223,14 @@ def test_quiz_lifecycle_and_student_publication_gate(client):
         and row["max_score"] == 2
         for row in progress.json()
     )
+
+    weak = test_client.get('/api/student/weak-topics', headers=student_headers)
+    assert weak.status_code == 200, weak.text
+    weak_rows = weak.json()
+    assert weak_rows
+    assert weak_rows[0]['topic'] == 'Arrays'
+    assert weak_rows[0]['percentage'] == 100
+    assert weak_rows[0]['recommendation'].startswith('Review the approved resources')
 
     archived = test_client.patch(
         f"/api/quizzes/{quiz_id}/status?status=ARCHIVED",
