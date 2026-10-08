@@ -7,7 +7,7 @@ import tempfile
 
 from app.main import app
 from app.db.session import Base, get_db
-from app.models.models import User, Department, Semester, Subject, TeacherSubject, Enrollment, Content
+from app.models.models import User, Department, Semester, Subject, TeacherSubject, Enrollment, Content, Resource, ResourceChunk
 from app.api.routes import pwd
 
 
@@ -160,6 +160,106 @@ def test_student_cannot_access_unassigned_subject(client):
     )
     assert response.status_code == 403
 
+
+def test_resource_access_and_download_isolation(client, monkeypatch):
+    db = next(iter(app.dependency_overrides[get_db]()))
+    try:
+        subject_a_resource = Resource(
+            subject_id=1,
+            uploaded_by=1,
+            title="Approved Resource",
+            resource_type="REFERENCE",
+            storage_key="subject-a/approved.txt",
+            status="APPROVED",
+            extracted_text="Approved material",
+            page_count=1,
+        )
+        draft_resource = Resource(
+            subject_id=1,
+            uploaded_by=1,
+            title="Draft Resource",
+            resource_type="REFERENCE",
+            storage_key="subject-a/draft.txt",
+            status="DRAFT",
+            extracted_text="Draft material",
+            page_count=1,
+        )
+        private_resource = Resource(
+            subject_id=2,
+            uploaded_by=1,
+            title="Private Resource",
+            resource_type="REFERENCE",
+            storage_key="subject-b/private.txt",
+            status="APPROVED",
+            extracted_text="Private material",
+            page_count=1,
+        )
+        db.add_all([subject_a_resource, draft_resource, private_resource])
+        db.flush()
+        db.add(
+            ResourceChunk(
+                resource_id=subject_a_resource.id,
+                subject_id=1,
+                chunk_index=0,
+                text="Approved chunk",
+                page_number=1,
+                section="document",
+                qdrant_point_id="resource-test-point",
+            )
+        )
+        db.commit()
+        approved_id = subject_a_resource.id
+        draft_id = draft_resource.id
+        private_id = private_resource.id
+    finally:
+        db.close()
+
+    monkeypatch.setattr(
+        "app.api.routes.get_object",
+        lambda key: b"approved file" if key == "subject-a/approved.txt" else b"private file",
+    )
+
+    student_headers = login(client, "student@example.com", "Student@123")
+    teacher_headers = login(client, "teacher@example.com", "Teacher@123")
+
+    student_resources = client.get(
+        "/api/resources?subject_id=1",
+        headers=student_headers,
+    )
+    assert student_resources.status_code == 200
+    assert {row["id"] for row in student_resources.json()} == {approved_id, draft_id}
+
+    draft_download = client.get(
+        f"/api/resources/{draft_id}/download",
+        headers=student_headers,
+    )
+    assert draft_download.status_code == 403
+
+    approved_download = client.get(
+        f"/api/resources/{approved_id}/download",
+        headers=student_headers,
+    )
+    assert approved_download.status_code == 200
+    assert approved_download.content == b"approved file"
+
+    approved_chunks = client.get(
+        f"/api/resources/{approved_id}/chunks",
+        headers=student_headers,
+    )
+    assert approved_chunks.status_code == 200
+    assert approved_chunks.json()[0]["text"] == "Approved chunk"
+
+    private_download = client.get(
+        f"/api/resources/{private_id}/download",
+        headers=student_headers,
+    )
+    assert private_download.status_code == 404
+
+    private_teacher_download = client.get(
+        f"/api/resources/{private_id}/download",
+        headers=teacher_headers,
+    )
+    assert private_teacher_download.status_code == 404
 
 def test_teacher_cannot_access_unassigned_subject(client):
     headers = login(client, "teacher@example.com", "Teacher@123")
