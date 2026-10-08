@@ -76,9 +76,9 @@ def test_teaching_plan_generates_with_weekly_capacity(client):
                                 headers=headers, json={"subject_id": subject_id})
     assert response.status_code == 200, response.text
     rows = response.json()
-    assert len(rows) == 4
-    assert [row["week"] for row in rows] == [1, 1, 2, 2]
-    assert all(row["planned_hours"] == 2 for row in rows)
+    assert len(rows) == 3
+    assert [row["week"] for row in rows] == [1, 2, 2]
+    assert [row["planned_hours"] for row in rows] == [4, 4, 4]
 
 
 def test_completed_topic_is_preserved_when_plan_is_regenerated(client):
