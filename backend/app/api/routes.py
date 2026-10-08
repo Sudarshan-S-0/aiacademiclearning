@@ -147,7 +147,11 @@ def resource_chunks(resource_id:int,db:Session=Depends(get_db),u=Depends(current
 @router.get("/resources")
 def resources(subject_id:int,db:Session=Depends(get_db),u=Depends(current_user)):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
-    return [{"id":r.id,"title":r.title,"type":r.resource_type,"status":r.status,"version":r.version,"pages":r.page_count,"chars":len(r.extracted_text or "")} for r in db.scalars(select(Resource).where(Resource.subject_id==subject_id).order_by(Resource.id.desc())).all()]
+    resource_query = select(Resource).where(Resource.subject_id == subject_id)
+    if u.role == "STUDENT":
+        resource_query = resource_query.where(Resource.status == "APPROVED")
+    rows = db.scalars(resource_query.order_by(Resource.id.desc())).all()
+    return [{"id":r.id,"title":r.title,"type":r.resource_type,"status":r.status,"version":r.version,"pages":r.page_count,"chars":len(r.extracted_text or "")} for r in rows]
 @router.patch("/resources/{resource_id}/status")
 def resource_status(resource_id:int,status:str=Query(...),db:Session=Depends(get_db),u=Depends(require_roles("ADMIN","TEACHER"))):
     x=db.get(Resource,resource_id)
