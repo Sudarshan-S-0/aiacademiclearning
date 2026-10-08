@@ -4,7 +4,7 @@ class Settings(BaseSettings):
     cors_origins:str="http://localhost:5173"
     jwt_secret:str="change-this-in-production"
     gemini_api_key:str=""
-    gemini_model:str="gemini-2.0-flash"
+    gemini_model:str="gemini-3.8-flash"
     qdrant_url:str="http://localhost:6333"
     minio_endpoint:str="localhost:9000"
     minio_access_key:str="minio"
