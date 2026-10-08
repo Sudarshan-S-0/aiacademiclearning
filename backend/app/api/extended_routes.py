@@ -873,9 +873,9 @@ def student_analytics_v2(db: Session = Depends(get_db), u=Depends(require_roles(
         topic = topic_map[topic_id]
         pct = percentage(t)
         recommendation = "Keep practicing this topic."
-        if pct < 50:
+        if pct < 70:
             recommendation = "Priority revision: review published material and attempt another quiz."
-        elif pct < 70:
+        elif pct < 85:
             recommendation = "Revise this topic and practice more questions."
         topic_output.append({
             "subject_id": subject_id,
