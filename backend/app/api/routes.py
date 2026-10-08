@@ -33,11 +33,21 @@ class AIPlanRequest(BaseModel): subject_id:int
 class AskRequest(BaseModel): subject_id:int;question:str
 def token_for(u):return jwt.encode({"sub":str(u.id),"role":u.role,"exp":datetime.now(timezone.utc)+timedelta(hours=8)},settings.jwt_secret,algorithm="HS256")
 def current_user(authorization:str|None=Header(default=None),db:Session=Depends(get_db)):
-    if not authorization or not authorization.startswith("Bearer "):raise HTTPException(401,"Authentication required")
-    try:data=jwt.decode(authorization[7:],settings.jwt_secret,algorithms=["HS256"])
-    except jwt.PyJWTError:raise HTTPException(401,"Invalid token")
-    u=db.get(User,int(data["sub"]))
-    if not u or not u.is_active:raise HTTPException(401,"Inactive user")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401,"Authentication required")
+    try:
+        data=jwt.decode(authorization[7:],settings.jwt_secret,algorithms=["HS256"])
+        subject=data.get("sub")
+        if not subject:
+            raise HTTPException(401,"Invalid token")
+        user_id=int(subject)
+    except HTTPException:
+        raise
+    except (jwt.PyJWTError,TypeError,ValueError):
+        raise HTTPException(401,"Invalid token")
+    u=db.get(User,user_id)
+    if not u or not u.is_active:
+        raise HTTPException(401,"Inactive user")
     return u
 def require_roles(*roles):
     def dep(u=Depends(current_user)):
