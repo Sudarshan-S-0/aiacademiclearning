@@ -227,7 +227,7 @@ def test_resource_access_and_download_isolation(client, monkeypatch):
         headers=student_headers,
     )
     assert student_resources.status_code == 200
-    assert {row["id"] for row in student_resources.json()} == {approved_id, draft_id}
+    assert {row["id"] for row in student_resources.json()} == {approved_id}
 
     draft_download = client.get(
         f"/api/resources/{draft_id}/download",
