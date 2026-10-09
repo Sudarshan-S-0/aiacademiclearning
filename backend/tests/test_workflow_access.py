@@ -316,6 +316,7 @@ def test_teacher_cannot_mutate_records_in_unassigned_subject(client):
         )
         db.add(private_plan)
         db.commit()
+        plan_id = private_plan.id
         resource_id = private_resource.id
         content_id = private_content.id
         topic_id = private_topic.id
@@ -379,6 +380,6 @@ def test_teacher_cannot_mutate_records_in_unassigned_subject(client):
         assert verify.get(Content, content_id).status == "IN_REVIEW"
         assert verify.get(Topic, topic_id).estimated_hours == 2
         assert verify.get(Quiz, quiz_id).status == "DRAFT"
-        assert verify.get(TeachingPlan, private_plan.id).planned_hours == 2
+        assert verify.get(TeachingPlan, plan_id).planned_hours == 2
     finally:
         verify.close()
