@@ -75,6 +75,7 @@ Install:
 
     pip install -r requirements.txt
     copy .env.example .env
+    python -m alembic -c alembic.ini upgrade head
 
 Seed demo data:
 
@@ -135,7 +136,7 @@ Change demo passwords and JWT_SECRET before real deployment.
 
 ## Notes
 
-Base.metadata.create_all() is used for a fresher-friendly project setup. The system is structured around the supplied academic workflow and can be run as a demonstration system after dependencies and infrastructure are installed.
+Database schema changes are managed with Alembic. Run `python -m alembic -c alembic.ini upgrade head` from `backend/` before starting the API on a fresh database. The initial migration uses frozen v1 model metadata; do not edit released migration files. Create and review a new migration for every later schema change.
 
 ## Production readiness
 
@@ -149,6 +150,6 @@ The application validates critical settings when `ENVIRONMENT=production` (or `p
 - Do not run `backend/seed.py` in production; the script is blocked when production mode is enabled.
 - Terminate HTTPS at a trusted reverse proxy or hosting platform and restrict database, MinIO, and Qdrant network access to the application.
 
-**Database migration limitation:** the current application uses SQLAlchemy `Base.metadata.create_all()` plus a small compatibility-migration routine. It does not yet have versioned Alembic migrations. Before using this system for important or persistent production data, add versioned migrations and test upgrades against a copy of the target database. Back up the database before schema changes.
+**Database migration note:** the repository now has an Alembic baseline. For an existing database that already matches the baseline schema, take a backup and verify the schema before running `python -m alembic -c alembic.ini stamp 0001_initial_schema` from `backend/`; do not run the initial `upgrade` against tables that already exist. For every subsequent schema change, generate a new revision with `python -m alembic -c alembic.ini revision --autogenerate -m "describe change"`, review the generated operations, and test both fresh installs and upgrades against disposable PostgreSQL databases. Never stamp an existing database without confirming that its schema matches the baseline.
 
 The production configuration checks are a safety baseline, not a complete deployment certification. Verify backups/restoration, monitoring, TLS, least-privilege service credentials, and provider-specific network rules before launch.
