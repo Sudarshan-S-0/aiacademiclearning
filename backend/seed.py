@@ -1,6 +1,14 @@
 from passlib.context import CryptContext
+from app.core.config import settings
 from app.db.session import Base,engine,SessionLocal
 from app.models.models import *
+
+if settings.environment.strip().lower() in {"production", "prod"}:
+    raise RuntimeError(
+        "Demo seed data is disabled in production because it creates accounts "
+        "with publicly documented demo passwords."
+    )
+
 Base.metadata.create_all(bind=engine)
 pwd=CryptContext(schemes=["bcrypt"],deprecated="auto");db=SessionLocal()
 try:
