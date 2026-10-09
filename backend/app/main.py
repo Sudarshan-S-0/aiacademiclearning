@@ -1,3 +1,4 @@
+import logging
 from time import monotonic
 from collections import defaultdict
 from fastapi import FastAPI,Request
@@ -8,6 +9,8 @@ from app.db.session import Base,engine
 from app.api.routes import router
 from app.api.extended_routes import router as extended_router
 from app.models import models
+
+logger = logging.getLogger(__name__)
 Base.metadata.create_all(bind=engine)
 
 def apply_compat_migrations():
@@ -22,9 +25,11 @@ def apply_compat_migrations():
                 for statement in statements:
                     conn.execute(text(statement))
     except Exception:
-        # Fresh installations are handled by create_all; existing databases can be
-        # migrated with the same statements through the deployment migration step.
-        pass
+        # Never hide a schema-compatibility failure in production: the app could
+        # otherwise start against a database with missing columns.
+        if settings.environment.strip().lower() in {"production", "prod"}:
+            raise
+        logger.exception("Compatibility migration failed; development startup will continue")
 
 apply_compat_migrations()
 
