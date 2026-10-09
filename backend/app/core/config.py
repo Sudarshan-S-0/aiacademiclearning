@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     minio_endpoint: str = "localhost:9000"
     minio_access_key: str = "minio"
     minio_secret_key: str = "minio123"
+    minio_secure: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -40,6 +41,8 @@ class Settings(BaseSettings):
 
         if self.minio_access_key == "minio" or self.minio_secret_key == "minio123":
             problems.append("MINIO_ACCESS_KEY and MINIO_SECRET_KEY must not use demo credentials")
+        if not self.minio_secure:
+            problems.append("MINIO_SECURE must be true in production to use TLS")
 
         if problems:
             raise ValueError("Invalid production configuration: " + "; ".join(problems))
