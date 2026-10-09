@@ -1,0 +1,10 @@
+# Database migrations
+
+- Fresh database: run `alembic upgrade head` from the `backend` directory.
+- Existing database: back it up, verify its schema matches the baseline, then run
+  `alembic stamp 0001_initial_schema` once. Do not run the initial upgrade against
+  tables that already exist.
+- Future schema changes: create a new revision with
+  `alembic revision --autogenerate -m "describe schema change"`, review the generated
+  operations, and commit the revision. Do not edit an already released revision.
+- Test both fresh installs and upgrades using a disposable database before release.
