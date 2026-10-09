@@ -25,6 +25,7 @@ def test_production_settings_accept_explicit_secure_values():
         minio_endpoint="minio.internal:9000",
         minio_access_key="academic-service",
         minio_secret_key="a-unique-object-storage-secret",
+        minio_secure=True,
     )
 
     assert settings.environment == "production"
