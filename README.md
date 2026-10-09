@@ -136,3 +136,19 @@ Change demo passwords and JWT_SECRET before real deployment.
 ## Notes
 
 Base.metadata.create_all() is used for a fresher-friendly project setup. The system is structured around the supplied academic workflow and can be run as a demonstration system after dependencies and infrastructure are installed.
+
+## Production readiness
+
+The application validates critical settings when `ENVIRONMENT=production` (or `prod`). Configure these values through the deployment platform's secret/configuration manager; do not commit a real `.env` file.
+
+- Set a unique `JWT_SECRET` with at least 32 characters.
+- Set `DATABASE_URL` to a managed or otherwise non-local database host.
+- Set `CORS_ORIGINS` to the exact HTTPS frontend origin(s), separated by commas.
+- Set unique `MINIO_ACCESS_KEY` and `MINIO_SECRET_KEY` values and `MINIO_SECURE=true` when the object-storage endpoint supports TLS.
+- Set `MINIO_ENDPOINT`, `QDRANT_URL`, and `GEMINI_API_KEY` to the intended deployment services/configuration.
+- Do not run `backend/seed.py` in production; the script is blocked when production mode is enabled.
+- Terminate HTTPS at a trusted reverse proxy or hosting platform and restrict database, MinIO, and Qdrant network access to the application.
+
+**Database migration limitation:** the current application uses SQLAlchemy `Base.metadata.create_all()` plus a small compatibility-migration routine. It does not yet have versioned Alembic migrations. Before using this system for important or persistent production data, add versioned migrations and test upgrades against a copy of the target database. Back up the database before schema changes.
+
+The production configuration checks are a safety baseline, not a complete deployment certification. Verify backups/restoration, monitoring, TLS, least-privilege service credentials, and provider-specific network rules before launch.
