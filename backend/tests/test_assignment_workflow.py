@@ -290,6 +290,29 @@ def test_assignment_submission_grading_and_object_isolation(client):
     admin_headers = login(
         test_client, "assignment-admin@example.com", "Admin@123"
     )
+
+    # Sensitive assessment operations must retain the authenticated actor and
+    # the correct target entity in the audit trail.
+    audit_response = test_client.get("/api/audit", headers=admin_headers)
+    assert audit_response.status_code == 200, audit_response.text
+    audit_rows = audit_response.json()
+    student_id = test_client.get("/api/me", headers=student_headers).json()["id"]
+    teacher_id = test_client.get("/api/me", headers=teacher_headers).json()["id"]
+    assert any(
+        row["actor_id"] == student_id
+        and row["action"] == "SUBMIT_ASSIGNMENT"
+        and row["entity"] == "ASSIGNMENT"
+        and row["entity_id"] == assignment_id
+        for row in audit_rows
+    )
+    assert any(
+        row["actor_id"] == teacher_id
+        and row["action"] == "GRADE_ASSIGNMENT"
+        and row["entity"] == "ASSIGNMENT_SUBMISSION"
+        and row["entity_id"] == submission_id
+        for row in audit_rows
+    )
+
     admin_analytics = test_client.get(
         "/api/analytics/admin",
         headers=admin_headers,
