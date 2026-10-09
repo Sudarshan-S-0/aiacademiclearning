@@ -7,7 +7,7 @@ import tempfile
 
 from app.main import app
 from app.db.session import Base, get_db
-from app.models.models import User, Department, Semester, Subject, TeacherSubject, Enrollment, Content, Resource, ResourceChunk
+from app.models.models import User, Department, Semester, Subject, TeacherSubject, Enrollment, Content, Resource, ResourceChunk, Topic, Quiz, TeachingPlan
 from app.api.routes import pwd
 
 
@@ -269,3 +269,116 @@ def test_teacher_cannot_access_unassigned_subject(client):
         headers=headers,
     )
     assert response.status_code == 403
+
+
+def test_teacher_cannot_mutate_records_in_unassigned_subject(client):
+    db = next(iter(app.dependency_overrides[get_db]()))
+    try:
+        teacher = db.query(User).filter_by(email="teacher@example.com").one()
+        private_resource = Resource(
+            subject_id=2,
+            uploaded_by=teacher.id,
+            title="Private Resource",
+            resource_type="REFERENCE",
+            status="DRAFT",
+            extracted_text="Private material",
+        )
+        private_content = Content(
+            subject_id=2,
+            title="Private Draft",
+            content_type="NOTES",
+            body="Private body",
+            status="IN_REVIEW",
+            version=1,
+            created_by=teacher.id,
+        )
+        private_topic = Topic(
+            subject_id=2,
+            unit_number=1,
+            topic_name="Private Topic",
+            sequence_order=1,
+            estimated_hours=2,
+        )
+        private_quiz = Quiz(
+            subject_id=2,
+            title="Private Quiz",
+            duration_minutes=20,
+            status="DRAFT",
+        )
+        db.add_all([private_resource, private_content, private_topic, private_quiz])
+        db.flush()
+        private_plan = TeachingPlan(
+            subject_id=2,
+            topic_id=private_topic.id,
+            planned_week=1,
+            planned_hours=2,
+            status="PLANNED",
+        )
+        db.add(private_plan)
+        db.commit()
+        resource_id = private_resource.id
+        content_id = private_content.id
+        topic_id = private_topic.id
+        quiz_id = private_quiz.id
+    finally:
+        db.close()
+
+    headers = login(client, "teacher@example.com", "Teacher@123")
+
+    resource_update = client.patch(
+        f"/api/resources/{resource_id}/status?status=APPROVED",
+        headers=headers,
+    )
+    assert resource_update.status_code == 404
+
+    content_edit = client.patch(
+        f"/api/content/{content_id}",
+        headers=headers,
+        json={"body": "Unauthorized change"},
+    )
+    assert content_edit.status_code == 404
+
+    content_publish = client.patch(
+        f"/api/content/{content_id}/status",
+        headers=headers,
+        json={"status": "APPROVED"},
+    )
+    assert content_publish.status_code == 404
+
+    topic_edit = client.patch(
+        f"/api/topics/{topic_id}",
+        headers=headers,
+        json={"estimated_hours": 99},
+    )
+    assert topic_edit.status_code == 404
+
+    plan_edit = client.post(
+        "/api/teaching-plan/edit/2",
+        headers=headers,
+        json={"action": "HOURS", "topic_id": topic_id, "value": 99},
+    )
+    assert plan_edit.status_code == 403
+
+    plan_update = client.post(
+        "/api/teaching-plan/2/update",
+        headers=headers,
+        json={"action": "duration", "topic_id": topic_id, "value": 99},
+    )
+    assert plan_update.status_code == 403
+
+    quiz_publish = client.patch(
+        f"/api/quizzes/{quiz_id}/status?status=PUBLISHED",
+        headers=headers,
+    )
+    assert quiz_publish.status_code == 404
+
+    verify = next(iter(app.dependency_overrides[get_db]()))
+    try:
+        assert verify.get(Resource, resource_id).status == "DRAFT"
+        assert verify.get(Content, content_id).body == "Private body"
+        assert verify.get(Content, content_id).status == "IN_REVIEW"
+        assert verify.get(Topic, topic_id).estimated_hours == 2
+        assert verify.get(Quiz, quiz_id).status == "DRAFT"
+        assert verify.get(TeachingPlan, private_plan.id).planned_hours == 2
+    finally:
+        verify.close()
