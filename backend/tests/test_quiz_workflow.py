@@ -51,18 +51,29 @@ def client():
         password_hash=pwd.hash("Student@123"),
         role="STUDENT",
     )
-    db.add_all([subject, admin, student])
+    second_student = User(
+        full_name="Second Quiz Student",
+        email="quiz-student-2@example.com",
+        password_hash=pwd.hash("Student2@123"),
+        role="STUDENT",
+    )
+    db.add_all([subject, admin, student, second_student])
     db.flush()
     topic = Topic(subject_id=subject.id, unit_number=1, topic_name='Arrays', sequence_order=1, estimated_hours=2, status='ACTIVE')
     db.add(topic)
     db.flush()
-    db.add(
+    db.add_all([
         Enrollment(
             student_id=student.id,
             subject_id=subject.id,
             academic_year="2026-27",
-        )
-    )
+        ),
+        Enrollment(
+            student_id=second_student.id,
+            subject_id=subject.id,
+            academic_year="2026-27",
+        ),
+    ])
     db.commit()
     subject_id = subject.id
     db.close()
@@ -225,6 +236,30 @@ def test_quiz_lifecycle_and_student_publication_gate(client):
         and row["max_score"] == 2
         for row in progress.json()
     )
+
+    # Assessment results must be scoped to the authenticated student, even
+    # when another student is enrolled in the same subject and quiz.
+    second_student_headers = login(
+        test_client, "quiz-student-2@example.com", "Student2@123"
+    )
+    second_student_progress = test_client.get(
+        "/api/student/progress", headers=second_student_headers
+    )
+    assert second_student_progress.status_code == 200, second_student_progress.text
+    assert second_student_progress.json() == []
+
+    second_student_analytics = test_client.get(
+        "/api/analytics/student-v2", headers=second_student_headers
+    )
+    assert second_student_analytics.status_code == 200, second_student_analytics.text
+    second_subject = next(
+        item for item in second_student_analytics.json()["subjects"]
+        if item["subject"] == "Quiz Subject"
+    )
+    assert second_subject["activities"] == 0
+    assert second_subject["completed"] == 0
+    assert second_subject["score"] == 0
+    assert second_subject["max_score"] == 0
 
     weak = test_client.get('/api/student/weak-topics', headers=student_headers)
     assert weak.status_code == 200, weak.text
