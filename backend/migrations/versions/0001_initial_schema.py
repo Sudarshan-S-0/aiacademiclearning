@@ -14,8 +14,7 @@ from typing import Sequence, Union
 
 from alembic import op
 
-from app.db.session import Base
-from app.models import models  # noqa: F401 - registers all model tables
+from migrations.schema_v1 import Base
 
 revision: str = "0001_initial_schema"
 down_revision: Union[str, None] = None
@@ -24,9 +23,8 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Bootstrap the schema from the current model metadata for fresh installs.
-    # Keep this baseline immutable after it is adopted; subsequent changes belong
-    # in new revisions generated with --autogenerate and reviewed before release.
+    # Use the frozen v1 metadata, not the live application models. This keeps the
+    # baseline stable as application models evolve.
     Base.metadata.create_all(bind=op.get_bind())
 
 
