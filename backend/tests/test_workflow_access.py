@@ -7,7 +7,7 @@ import tempfile
 
 from app.main import app, _hits
 from app.db.session import Base, get_db
-from app.models.models import User, Department, Semester, Subject, TeacherSubject, Enrollment, Content, Resource, ResourceChunk, Topic, Quiz, TeachingPlan, AuditLog
+from app.models.models import User, Department, Semester, Subject, TeacherSubject, Enrollment, Content, Resource, ResourceChunk, Topic, Quiz, TeachingPlan, AuditLog, GeneratedArtifact
 from app.api.routes import pwd
 
 
@@ -934,3 +934,29 @@ def test_topic_completion_updates_plan_history_and_cannot_be_reopened(client):
         json={"completed": False},
     )
     assert reopened.status_code == 409, reopened.text
+
+
+def test_student_cannot_download_unlinked_legacy_artifact(client):
+    db = next(iter(app.dependency_overrides[get_db]()))
+    try:
+        teacher = db.query(User).filter_by(email="teacher@example.com").one()
+        artifact = GeneratedArtifact(
+            subject_id=1,
+            content_id=None,
+            title="Unlinked legacy artifact",
+            artifact_type="PPTX",
+            storage_key="subject-a/unlinked.pptx",
+            created_by=teacher.id,
+        )
+        db.add(artifact)
+        db.commit()
+        artifact_id = artifact.id
+    finally:
+        db.close()
+
+    headers = login(client, "student@example.com", "Student@123")
+    response = client.get(
+        f"/api/artifacts/{artifact_id}/download",
+        headers=headers,
+    )
+    assert response.status_code == 403, response.text
