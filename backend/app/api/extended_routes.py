@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import math
 from collections import Counter, defaultdict
 import json, re
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
@@ -886,8 +887,8 @@ def grade_assignment(submission_id: int, p: GradeSubmission, db: Session = Depen
     content = db.get(Content, s.content_id) if s else None
     if not s or not content or not can_access_subject(db, u, content.subject_id):
         raise HTTPException(404, "Submission not found")
-    if p.score < 0 or p.score > 100:
-        raise HTTPException(400, "Score must be between 0 and 100")
+    if not math.isfinite(p.score) or p.score < 0 or p.score > 100:
+        raise HTTPException(400, "Score must be a finite number between 0 and 100")
     s.score, s.feedback = p.score, p.feedback
     progress = db.scalar(select(Progress).where(
         Progress.assignment_submission_id == s.id,
