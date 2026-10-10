@@ -16,7 +16,7 @@ from app.services.qdrant import upsert_chunks,search_chunks
 router=APIRouter(prefix="/api");pwd=CryptContext(schemes=["bcrypt"],deprecated="auto")
 class Login(BaseModel): email:EmailStr;password:str
 class UserCreate(BaseModel): full_name:str=Field(min_length=2);email:EmailStr;password:str=Field(min_length=8);role:str
-class SubjectCreate(BaseModel): semester_id:int;code:str;name:str;description:str|None=None;weeks:int=16;hours_per_week:int=4;lecture_duration_minutes:int=60
+class SubjectCreate(BaseModel): semester_id:int=Field(ge=1);code:str=Field(min_length=1,max_length=30);name:str=Field(min_length=1,max_length=200);description:str|None=None;weeks:int=Field(default=16,ge=1);hours_per_week:int=Field(default=4,gt=0);lecture_duration_minutes:int=Field(default=60,gt=0)
 class AssignmentCreate(BaseModel): teacher_id:int;subject_id:int;section_id:int|None=None;academic_year:str
 class EnrollmentCreate(BaseModel): student_id:int;subject_id:int;section_id:int|None=None;academic_year:str
 class TopicCreate(BaseModel): subject_id:int;unit_number:int=Field(ge=1);topic_name:str=Field(min_length=1);sequence_order:int=Field(ge=1);estimated_hours:float=Field(default=1,gt=0,allow_inf_nan=False)
@@ -113,7 +113,9 @@ def create_user(p:UserCreate,db:Session=Depends(get_db),u=Depends(require_roles(
 def users(db:Session=Depends(get_db),u=Depends(require_roles("ADMIN"))):return [{"id":x.id,"name":x.full_name,"email":x.email,"role":x.role,"active":x.is_active} for x in db.scalars(select(User).order_by(User.id.desc())).all()]
 @router.post("/subjects")
 def create_subject(p:SubjectCreate,db:Session=Depends(get_db),u=Depends(require_roles("ADMIN"))):
-    x=Subject(**p.model_dump());db.add(x);db.flush();audit(db,u,"CREATE_SUBJECT","SUBJECT",x.id);db.commit();return {"id":x.id,"code":x.code,"name":x.name}
+    if not p.code.strip() or not p.name.strip():raise HTTPException(400,"Subject code and name are required")
+    if not db.get(Semester,p.semester_id):raise HTTPException(404,"Semester not found")
+    x=Subject(**{**p.model_dump(),"code":p.code.strip(),"name":p.name.strip()});db.add(x);db.flush();audit(db,u,"CREATE_SUBJECT","SUBJECT",x.id);db.commit();return {"id":x.id,"code":x.code,"name":x.name}
 @router.get("/subjects")
 def subjects(db:Session=Depends(get_db),u=Depends(current_user)):
     q=select(Subject).where(Subject.status=="ACTIVE")
