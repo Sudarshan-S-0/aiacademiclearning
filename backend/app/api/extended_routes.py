@@ -36,15 +36,15 @@ class PlanEdit(BaseModel):
 
 
 class PYQQuestionInput(BaseModel):
-    year: int | None = None
-    question_no: str | None = None
-    question_text: str
-    marks: float = 1.0
+    year: int | None = Field(default=None, ge=1900, le=2100)
+    question_no: str | None = Field(default=None, max_length=30)
+    question_text: str = Field(min_length=1)
+    marks: float = Field(default=1.0, gt=0, allow_inf_nan=False)
 
 
 class PYQBulkRequest(BaseModel):
-    subject_id: int
-    resource_id: int | None = None
+    subject_id: int = Field(ge=1)
+    resource_id: int | None = Field(default=None, ge=1)
     questions: list[PYQQuestionInput]
 
 
@@ -688,9 +688,9 @@ def add_pyq_questions(p: PYQBulkRequest, db: Session = Depends(get_db),
             subject_id=p.subject_id,
             resource_id=p.resource_id,
             year=item.year,
-            question_no=item.question_no,
+            question_no=item.question_no.strip() if item.question_no else None,
             question_text=text_value,
-            marks=max(float(item.marks), 0.0),
+            marks=float(item.marks),
         )
         db.add(q)
         created.append(q)
