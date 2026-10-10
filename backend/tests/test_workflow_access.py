@@ -490,6 +490,19 @@ def test_topic_schedule_and_status_validation(client):
     )
     assert duplicate_topic.status_code == 409, duplicate_topic.text
 
+    punctuation_duplicate = client.post(
+        "/api/topics",
+        headers=headers,
+        json={
+            "subject_id": 1,
+            "unit_number": 1,
+            "topic_name": "Validated-Topic",
+            "sequence_order": 2,
+            "estimated_hours": 1,
+        },
+    )
+    assert punctuation_duplicate.status_code == 409, punctuation_duplicate.text
+
     blank_topic = client.post(
         "/api/topics",
         headers=headers,
