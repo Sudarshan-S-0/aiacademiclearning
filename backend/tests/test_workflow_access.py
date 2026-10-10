@@ -549,3 +549,66 @@ def test_subject_creation_validates_schedule_and_semester(client):
         json={**base_payload, "code": "NEW102", "name": "   "},
     )
     assert blank_name.status_code == 400, blank_name.text
+
+
+def test_pyq_rejects_invalid_marks_blank_text_and_archived_topic(client):
+    headers = login(client, "teacher@example.com", "Teacher@123")
+    base_payload = {
+        "subject_id": 1,
+        "year": 2025,
+        "question_text": "Explain database normalization",
+        "marks": 5,
+    }
+
+    for invalid_marks in (0, -1):
+        response = client.post(
+            "/api/pyq/questions",
+            headers=headers,
+            json={**base_payload, "marks": invalid_marks},
+        )
+        assert response.status_code == 422, (invalid_marks, response.text)
+
+    blank_question = client.post(
+        "/api/pyq/questions",
+        headers=headers,
+        json={**base_payload, "question_text": "   "},
+    )
+    assert blank_question.status_code == 400, blank_question.text
+
+    future_year = client.post(
+        "/api/pyq/questions",
+        headers=headers,
+        json={**base_payload, "year": 2200},
+    )
+    assert future_year.status_code == 422, future_year.text
+
+    topic = client.post(
+        "/api/topics",
+        headers=headers,
+        json={
+            "subject_id": 1,
+            "unit_number": 1,
+            "topic_name": "Archived PYQ Topic",
+            "sequence_order": 20,
+            "estimated_hours": 1,
+        },
+    )
+    assert topic.status_code == 200, topic.text
+    topic_id = topic.json()["id"]
+
+    archived = client.patch(
+        f"/api/topics/{topic_id}",
+        headers=headers,
+        json={"status": "ARCHIVED"},
+    )
+    assert archived.status_code == 200, archived.text
+
+    pyq_for_archived_topic = client.post(
+        "/api/pyq/questions",
+        headers=headers,
+        json={**base_payload, "topic_id": topic_id},
+    )
+    assert pyq_for_archived_topic.status_code == 400, pyq_for_archived_topic.text
+
+    valid = client.post("/api/pyq/questions", headers=headers, json=base_payload)
+    assert valid.status_code == 200, valid.text
