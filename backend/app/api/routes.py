@@ -1,5 +1,5 @@
 from datetime import datetime,timedelta,timezone
-import json,re,jwt
+import json,re,jwt,uuid
 from fastapi import APIRouter,Depends,HTTPException,UploadFile,File,Header,Query
 from passlib.context import CryptContext
 from pydantic import BaseModel,EmailStr,Field
@@ -165,7 +165,8 @@ async def upload_resource(subject_id:int,title:str|None=None,resource_type:str="
     ext=file.filename.lower().rsplit(".",1)[-1] if "." in file.filename else ""
     if ext not in allowed:raise HTTPException(415,"Unsupported file type")
     if len(data)>20*1024*1024:raise HTTPException(413,"Maximum file size is 20 MB")
-    key=f"subjects/{subject_id}/resources/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{u.id}_{file.filename.replace(' ','_')}"
+    safe_filename=re.sub(r"[^a-zA-Z0-9._-]", "_", file.filename)
+    key=f"subjects/{subject_id}/resources/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex}_{u.id}_{safe_filename}"
     text,pages=extract_text(file.filename,data);text=normalize_text(text);chunks,pages=extract_chunks(file.filename,data);stored=put_object(key,data,file.content_type or "application/octet-stream")
     if not stored:raise HTTPException(503,"Object storage is unavailable; resource was not saved")
     x=Resource(subject_id=subject_id,uploaded_by=u.id,title=title or file.filename,resource_type=resource_type,storage_key=key,status="DRAFT",extracted_text=text,page_count=pages);db.add(x);db.flush()
