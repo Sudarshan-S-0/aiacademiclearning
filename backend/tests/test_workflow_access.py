@@ -413,3 +413,31 @@ def test_public_student_registration_is_audited(client):
         assert events[0].actor_id is None
     finally:
         db.close()
+
+
+
+def test_inactive_user_cannot_log_in_or_create_login_audit(client):
+    db = next(iter(app.dependency_overrides[get_db]()))
+    try:
+        user = db.query(User).filter_by(email="student@example.com").one()
+        user.is_active = False
+        db.commit()
+        user_id = user.id
+    finally:
+        db.close()
+
+    response = client.post(
+        "/api/auth/login",
+        json={"email": "student@example.com", "password": "Student@123"},
+    )
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid credentials"
+
+    db = next(iter(app.dependency_overrides[get_db]()))
+    try:
+        assert db.query(AuditLog).filter(
+            AuditLog.actor_id == user_id,
+            AuditLog.action == "LOGIN",
+        ).count() == 0
+    finally:
+        db.close()
