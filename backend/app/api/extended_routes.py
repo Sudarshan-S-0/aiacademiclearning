@@ -284,12 +284,19 @@ def create_semester(p: SemesterCreate, db: Session = Depends(get_db), u=Depends(
         raise HTTPException(404, "Department not found")
     if db.scalar(select(Semester.id).where(
         Semester.department_id == p.department_id,
-        func.lower(Semester.academic_year) == academic_year.lower(),
+        func.lower(func.trim(Semester.academic_year)) == academic_year.lower(),
         Semester.semester_number == p.semester_number,
     )) is not None:
         raise HTTPException(409, "Semester already exists for this department and academic year")
     s = Semester(**{**p.model_dump(), "academic_year": academic_year})
-    db.add(s); db.flush(); audit(db, u, "CREATE_SEMESTER", "SEMESTER", s.id); db.commit()
+    try:
+        db.add(s)
+        db.flush()
+        audit(db, u, "CREATE_SEMESTER", "SEMESTER", s.id)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "Semester already exists for this department and academic year")
     return {"id": s.id, "department_id": s.department_id, "academic_year": s.academic_year,
             "semester": s.semester_number, "regulation": s.regulation}
 
@@ -310,11 +317,18 @@ def create_section(p: SectionCreate, db: Session = Depends(get_db), u=Depends(re
         raise HTTPException(404, "Semester not found")
     if db.scalar(select(Section.id).where(
         Section.semester_id == p.semester_id,
-        func.lower(Section.name) == name.lower(),
+        func.lower(func.trim(Section.name)) == name.lower(),
     )) is not None:
         raise HTTPException(409, "Section already exists for this semester")
     s = Section(semester_id=p.semester_id, name=name)
-    db.add(s); db.flush(); audit(db, u, "CREATE_SECTION", "SECTION", s.id); db.commit()
+    try:
+        db.add(s)
+        db.flush()
+        audit(db, u, "CREATE_SECTION", "SECTION", s.id)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "Section already exists for this semester")
     return {"id": s.id, "semester_id": s.semester_id, "name": s.name}
 
 
