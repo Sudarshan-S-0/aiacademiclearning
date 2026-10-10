@@ -168,3 +168,43 @@ def test_pyq_rejects_topic_from_another_subject(client):
         },
     )
     assert response.status_code == 400
+
+
+def test_reanalysis_preserves_explicit_topic_selection(client):
+    test_client, subject_id = client
+    headers = login(test_client)
+
+    # Deliberately select Linked Lists for a question whose wording strongly
+    # matches Arrays and Searching; explicit teacher mapping must win.
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        topics = session.query(Topic).filter(Topic.subject_id == subject_id).all()
+        linked_lists = next(topic for topic in topics if topic.topic_name == "Linked Lists")
+        selected_topic_id = linked_lists.id
+    finally:
+        session.close()
+
+    created = test_client.post("/api/pyq/questions", headers=headers, json={
+        "subject_id": subject_id,
+        "question_text": "Explain arrays and searching techniques",
+        "topic_id": selected_topic_id,
+        "marks": 5,
+    })
+    assert created.status_code == 200, created.text
+    question_id = created.json()["id"]
+
+    reanalyzed = test_client.post(
+        f"/api/pyq/reanalyze-v2/{subject_id}", headers=headers
+    )
+    assert reanalyzed.status_code == 200, reanalyzed.text
+
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        from app.models.models import PYQQuestion
+        question = session.get(PYQQuestion, question_id)
+        assert question is not None
+        assert question.topic_id == selected_topic_id
+        assert question.unit_number == 2
+        assert question.mapping_confidence == 1.0
+    finally:
+        session.close()
