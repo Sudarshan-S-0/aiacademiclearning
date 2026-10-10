@@ -158,6 +158,16 @@ def test_quiz_lifecycle_and_student_publication_gate(client):
     )
     assert published.status_code == 200, published.text
 
+    # Published assessments are immutable: generation must not replace their questions.
+    regenerate_published = test_client.post(
+        f"/api/quizzes/{quiz_id}/generate",
+        headers=admin_headers,
+    )
+    assert regenerate_published.status_code == 409
+    unchanged = test_client.get(f"/api/quizzes/{quiz_id}", headers=admin_headers)
+    assert unchanged.status_code == 200, unchanged.text
+    assert [item["id"] for item in unchanged.json()["questions"]] == [question_id]
+
     student_list = test_client.get(
         f"/api/quizzes?subject_id={subject_id}",
         headers=student_headers,
