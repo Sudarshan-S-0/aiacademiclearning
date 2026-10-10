@@ -222,7 +222,15 @@ def pyq_reanalyze(db: Session, subject_id: int):
     ).all()
     if not topics:
         raise HTTPException(400, "Create syllabus topics first")
+    active_topic_ids = {topic.id for topic in topics}
     for q in qs:
+        # A manually selected mapping is recorded with confidence 1.0. Keep it
+        # while its topic remains active in this subject; automatic mappings can
+        # be recalculated as the syllabus changes.
+        if q.mapping_confidence == 1.0 and q.topic_id in active_topic_ids:
+            q.frequency_key = normalize_key(q.question_text)[:255]
+            continue
+
         words = set(re.findall(r"[a-z0-9]{3,}", q.question_text.lower()))
         best, best_score = None, 0
         for topic in topics:
@@ -234,7 +242,13 @@ def pyq_reanalyze(db: Session, subject_id: int):
             q.topic_id = best.id
             q.unit_number = best.unit_number
             q.mapping_confidence = round(best_score / max(len(words), 1), 3)
-            q.frequency_key = normalize_key(q.question_text)[:255]
+        else:
+            # Do not leave a stale mapping to a topic that no longer matches
+            # the active syllabus.
+            q.topic_id = None
+            q.unit_number = None
+            q.mapping_confidence = 0.0
+        q.frequency_key = normalize_key(q.question_text)[:255]
     for old in db.scalars(select(TopicWeightage).where(TopicWeightage.subject_id == subject_id)).all():
         db.delete(old)
     total = sum(float(q.marks or 0) for q in qs) or 1.0
