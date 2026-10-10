@@ -5,6 +5,13 @@ from app.db.session import Base
 
 class User(Base):
     __tablename__="users"
+    __table_args__ = (
+        Index(
+            "uq_users_email_normalized",
+            func.lower(func.trim(column("email"))),
+            unique=True,
+        ),
+    )
     id:Mapped[int]=mapped_column(primary_key=True)
     full_name:Mapped[str]=mapped_column(String(120))
     email:Mapped[str]=mapped_column(String(255),unique=True,index=True)
