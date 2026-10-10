@@ -147,6 +147,7 @@ async def upload_resource(subject_id:int,title:str|None=None,resource_type:str="
     if len(data)>20*1024*1024:raise HTTPException(413,"Maximum file size is 20 MB")
     key=f"subjects/{subject_id}/resources/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{u.id}_{file.filename.replace(' ','_')}"
     text,pages=extract_text(file.filename,data);text=normalize_text(text);chunks,pages=extract_chunks(file.filename,data);stored=put_object(key,data,file.content_type or "application/octet-stream")
+    if not stored:raise HTTPException(503,"Object storage is unavailable; resource was not saved")
     x=Resource(subject_id=subject_id,uploaded_by=u.id,title=title or file.filename,resource_type=resource_type,storage_key=key,status="DRAFT",extracted_text=text,page_count=pages);db.add(x);db.flush()
     for i,ch in enumerate(chunks):db.add(ResourceChunk(resource_id=x.id,subject_id=subject_id,chunk_index=i,text=ch['text'],page_number=ch.get('page'),section=ch.get('section'),qdrant_point_id=str(int(__import__('hashlib').sha1(f'{x.id}:{i}'.encode()).hexdigest()[:15],16))))
     vectorized=upsert_chunks(x.id,subject_id,chunks,x.title)
