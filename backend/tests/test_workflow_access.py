@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 import os
 import tempfile
 
-from app.main import app
+from app.main import app, _hits
 from app.db.session import Base, get_db
 from app.models.models import User, Department, Semester, Subject, TeacherSubject, Enrollment, Content, Resource, ResourceChunk, Topic, Quiz, TeachingPlan
 from app.api.routes import pwd
@@ -13,6 +13,9 @@ from app.api.routes import pwd
 
 @pytest.fixture()
 def client():
+    # The app's in-memory rate limiter is shared across TestClient instances.
+    # Reset it for each test so unrelated tests do not consume this test's quota.
+    _hits.clear()
     db_path = tempfile.mktemp(suffix=".db")
     engine = create_engine(f"sqlite:///{db_path}")
     Base.metadata.create_all(engine)
