@@ -43,6 +43,7 @@ def test_admin_only_user_and_academic_management():
                    password_hash=pwd.hash("Student@123"), role="STUDENT")
     db.add_all([admin, teacher, student])
     db.commit()
+    teacher_id, student_id = teacher.id, student.id
     db.close()
 
     def override():
@@ -168,12 +169,12 @@ def test_admin_only_user_and_academic_management():
         # NULL section assignments must also be unique when academic-year
         # formatting differs, even when inserts bypass the API.
         constraint_db.add(TeacherSubject(
-            teacher_id=teacher.id, subject_id=created_subject.json()["id"],
+            teacher_id=teacher_id, subject_id=created_subject.json()["id"],
             section_id=None, academic_year="2027-28",
         ))
         constraint_db.commit()
         constraint_db.add(TeacherSubject(
-            teacher_id=teacher.id, subject_id=created_subject.json()["id"],
+            teacher_id=teacher_id, subject_id=created_subject.json()["id"],
             section_id=None, academic_year=" 2027-28 ",
         ))
         with pytest.raises(IntegrityError):
@@ -181,12 +182,12 @@ def test_admin_only_user_and_academic_management():
         constraint_db.rollback()
 
         constraint_db.add(Enrollment(
-            student_id=student.id, subject_id=created_subject.json()["id"],
+            student_id=student_id, subject_id=created_subject.json()["id"],
             section_id=None, academic_year="2027-28",
         ))
         constraint_db.commit()
         constraint_db.add(Enrollment(
-            student_id=student.id, subject_id=created_subject.json()["id"],
+            student_id=student_id, subject_id=created_subject.json()["id"],
             section_id=None, academic_year=" 2027-28 ",
         ))
         with pytest.raises(IntegrityError):
@@ -196,7 +197,7 @@ def test_admin_only_user_and_academic_management():
 
         # API-level duplicate checks should normalize year whitespace/case too.
         assignment_payload = {
-            "teacher_id": teacher.id,
+            "teacher_id": teacher_id,
             "subject_id": created_subject.json()["id"],
             "academic_year": "2026-27",
         }
@@ -209,7 +210,7 @@ def test_admin_only_user_and_academic_management():
         assert duplicate_assignment.status_code == 409, duplicate_assignment.text
 
         enrollment_payload = {
-            "student_id": student.id,
+            "student_id": student_id,
             "subject_id": created_subject.json()["id"],
             "academic_year": "2026-27",
         }
