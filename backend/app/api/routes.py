@@ -377,20 +377,25 @@ def pyq_analysis(subject_id:int,db:Session=Depends(get_db),u=Depends(current_use
     for q in qs:rep[q.frequency_key or q.question_text.lower()]=rep.get(q.frequency_key or q.question_text.lower(),0)+1
     return {"questions":len(qs),"weights":[{"topic_id":w.topic_id,"topic":t.topic_name,"unit":t.unit_number,"question_count":w.question_count,"marks":w.total_marks,"percentage":w.percentage} for w,t in rows],"repeated":[{"question":k,"frequency":v} for k,v in sorted(rep.items(),key=lambda z:z[1],reverse=True) if v>1]}
 @router.post("/teaching-plan/generate")
-def generate_plan(p:AIPlanRequest,db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
-    if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
-    subject=db.get(Subject,p.subject_id);topics=db.scalars(select(Topic).where(Topic.subject_id==p.subject_id,Topic.status=="ACTIVE").order_by(Topic.sequence_order)).all()
-    if not topics:raise HTTPException(400,"Create syllabus topics first")
-    for old in db.scalars(select(TeachingPlan).where(TeachingPlan.subject_id==p.subject_id,TeachingPlan.status!="COMPLETED")).all():db.delete(old)
-    week=1;used=0
-    for t in topics:
-        rem=t.estimated_hours
-        while rem>0 and week<=subject.weeks:
-            cap=max(subject.hours_per_week-used,0)
-            if cap<=0:week+=1;used=0;continue
-            h=min(rem,cap);db.add(TeachingPlan(subject_id=p.subject_id,topic_id=t.id,planned_week=week,planned_hours=h));rem-=h;used+=h
-            if used>=subject.hours_per_week:week+=1;used=0
-    audit(db,u,"GENERATE_TEACHING_PLAN","SUBJECT",p.subject_id);db.commit();return get_plan_data(db,p.subject_id)
+def generate_plan(p: AIPlanRequest, db: Session = Depends(get_db), u=Depends(require_roles("TEACHER", "ADMIN"))):
+    if not can_access_subject(db, u, p.subject_id):
+        raise HTTPException(403, "Subject access denied")
+    topics = db.scalars(
+        select(Topic).where(
+            Topic.subject_id == p.subject_id,
+            Topic.status == "ACTIVE",
+        ).order_by(Topic.sequence_order)
+    ).all()
+    if not topics:
+        raise HTTPException(400, "Create syllabus topics first")
+
+    # Reuse the completion-aware scheduler so regenerating a plan never
+    # reintroduces completed topics or overlaps their reserved teaching hours.
+    result = rebuild_teaching_plan(db, p.subject_id)
+    audit(db, u, "GENERATE_TEACHING_PLAN", "SUBJECT", p.subject_id)
+    db.commit()
+    return result
+
 def get_plan_data(db,subject_id):
     rows=db.execute(select(TeachingPlan,Topic).join(Topic,Topic.id==TeachingPlan.topic_id).where(TeachingPlan.subject_id==subject_id).order_by(TeachingPlan.planned_week,Topic.sequence_order)).all()
     return [{"id":p.id,"topic_id":p.topic_id,"topic":t.topic_name,"week":p.planned_week,"planned_hours":p.planned_hours,"actual_hours":p.actual_hours,"status":p.status,"note":p.teacher_note} for p,t in rows]
