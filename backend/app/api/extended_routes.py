@@ -82,15 +82,15 @@ class DepartmentCreate(BaseModel):
 
 
 class SemesterCreate(BaseModel):
-    department_id: int
-    academic_year: str
-    semester_number: int
-    regulation: str | None = None
+    department_id: int = Field(ge=1)
+    academic_year: str = Field(min_length=1, max_length=20)
+    semester_number: int = Field(ge=1, le=20)
+    regulation: str | None = Field(default=None, max_length=40)
 
 
 class SectionCreate(BaseModel):
-    semester_id: int
-    name: str
+    semester_id: int = Field(ge=1)
+    name: str = Field(min_length=1, max_length=30)
 
 
 def normalize_key(value: str) -> str:
@@ -277,9 +277,18 @@ def list_departments(db: Session = Depends(get_db), u=Depends(require_roles("ADM
 
 @router.post("/semesters")
 def create_semester(p: SemesterCreate, db: Session = Depends(get_db), u=Depends(require_roles("ADMIN"))):
+    academic_year = p.academic_year.strip()
+    if not academic_year:
+        raise HTTPException(400, "Academic year is required")
     if not db.get(Department, p.department_id):
         raise HTTPException(404, "Department not found")
-    s = Semester(**p.model_dump())
+    if db.scalar(select(Semester.id).where(
+        Semester.department_id == p.department_id,
+        func.lower(Semester.academic_year) == academic_year.lower(),
+        Semester.semester_number == p.semester_number,
+    )) is not None:
+        raise HTTPException(409, "Semester already exists for this department and academic year")
+    s = Semester(**{**p.model_dump(), "academic_year": academic_year})
     db.add(s); db.flush(); audit(db, u, "CREATE_SEMESTER", "SEMESTER", s.id); db.commit()
     return {"id": s.id, "department_id": s.department_id, "academic_year": s.academic_year,
             "semester": s.semester_number, "regulation": s.regulation}
@@ -294,9 +303,17 @@ def list_semesters(db: Session = Depends(get_db), u=Depends(require_roles("ADMIN
 
 @router.post("/sections")
 def create_section(p: SectionCreate, db: Session = Depends(get_db), u=Depends(require_roles("ADMIN"))):
+    name = p.name.strip()
+    if not name:
+        raise HTTPException(400, "Section name is required")
     if not db.get(Semester, p.semester_id):
         raise HTTPException(404, "Semester not found")
-    s = Section(**p.model_dump())
+    if db.scalar(select(Section.id).where(
+        Section.semester_id == p.semester_id,
+        func.lower(Section.name) == name.lower(),
+    )) is not None:
+        raise HTTPException(409, "Section already exists for this semester")
+    s = Section(semester_id=p.semester_id, name=name)
     db.add(s); db.flush(); audit(db, u, "CREATE_SECTION", "SECTION", s.id); db.commit()
     return {"id": s.id, "semester_id": s.semester_id, "name": s.name}
 
