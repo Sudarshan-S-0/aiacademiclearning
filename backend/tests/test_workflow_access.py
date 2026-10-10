@@ -864,3 +864,22 @@ def test_extended_plan_rebuild_respects_completed_week_capacity(client):
     assert remaining_rows, completed.json()
     assert min(row["week"] for row in remaining_rows) >= 2, completed.json()
     assert all(row["status"] == "PLANNED" for row in remaining_rows)
+
+    regenerated = client.post(
+        "/api/teaching-plan/generate",
+        headers=headers,
+        json={"subject_id": 1},
+    )
+    assert regenerated.status_code == 200, regenerated.text
+    regenerated_rows = regenerated.json()
+    assert all(
+        row["status"] == "COMPLETED"
+        for row in regenerated_rows
+        if row["topic_id"] == first_topic_id
+    )
+    regenerated_remaining = [
+        row for row in regenerated_rows
+        if row["topic_id"] == second_topic_id
+    ]
+    assert regenerated_remaining, regenerated_rows
+    assert min(row["week"] for row in regenerated_remaining) >= 2, regenerated_rows
