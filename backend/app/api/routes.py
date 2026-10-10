@@ -113,9 +113,23 @@ def create_user(p:UserCreate,db:Session=Depends(get_db),u=Depends(require_roles(
 def users(db:Session=Depends(get_db),u=Depends(require_roles("ADMIN"))):return [{"id":x.id,"name":x.full_name,"email":x.email,"role":x.role,"active":x.is_active} for x in db.scalars(select(User).order_by(User.id.desc())).all()]
 @router.post("/subjects")
 def create_subject(p:SubjectCreate,db:Session=Depends(get_db),u=Depends(require_roles("ADMIN"))):
-    if not p.code.strip() or not p.name.strip():raise HTTPException(400,"Subject code and name are required")
-    if not db.get(Semester,p.semester_id):raise HTTPException(404,"Semester not found")
-    x=Subject(**{**p.model_dump(),"code":p.code.strip(),"name":p.name.strip()});db.add(x);db.flush();audit(db,u,"CREATE_SUBJECT","SUBJECT",x.id);db.commit();return {"id":x.id,"code":x.code,"name":x.name}
+    code, name = p.code.strip(), p.name.strip()
+    if not code or not name:
+        raise HTTPException(400,"Subject code and name are required")
+    if not db.get(Semester,p.semester_id):
+        raise HTTPException(404,"Semester not found")
+    duplicate = db.scalar(select(Subject.id).where(
+        Subject.semester_id == p.semester_id,
+        func.upper(Subject.code) == code.upper(),
+    ))
+    if duplicate is not None:
+        raise HTTPException(409,"Subject code already exists for this semester")
+    x=Subject(**{**p.model_dump(),"code":code,"name":name})
+    db.add(x)
+    db.flush()
+    audit(db,u,"CREATE_SUBJECT","SUBJECT",x.id)
+    db.commit()
+    return {"id":x.id,"code":x.code,"name":x.name}
 @router.get("/subjects")
 def subjects(db:Session=Depends(get_db),u=Depends(current_user)):
     q=select(Subject).where(Subject.status=="ACTIVE")
