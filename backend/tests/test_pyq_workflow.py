@@ -206,5 +206,31 @@ def test_reanalysis_preserves_explicit_topic_selection(client):
         assert question.topic_id == selected_topic_id
         assert question.unit_number == 2
         assert question.mapping_confidence == 1.0
+        arrays_topic_id = next(
+            topic.id for topic in session.query(Topic).filter(Topic.subject_id == subject_id).all()
+            if topic.topic_name == "Arrays and Searching"
+        )
+    finally:
+        session.close()
+
+    archived = test_client.patch(
+        f"/api/topics/{selected_topic_id}",
+        headers=headers,
+        json={"status": "ARCHIVED"},
+    )
+    assert archived.status_code == 200, archived.text
+
+    legacy_reanalysis = test_client.post(
+        f"/api/pyq/reanalyze/{subject_id}",
+        headers=headers,
+    )
+    assert legacy_reanalysis.status_code == 200, legacy_reanalysis.text
+
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        question = session.get(PYQQuestion, question_id)
+        assert question.topic_id == arrays_topic_id
+        assert question.unit_number == 1
+        assert question.mapping_confidence != 1.0
     finally:
         session.close()
