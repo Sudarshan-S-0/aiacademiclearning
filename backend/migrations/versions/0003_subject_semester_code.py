@@ -32,16 +32,16 @@ def upgrade() -> None:
             f"count={duplicate.subject_count}. Reconcile duplicate subject codes "
             "before retrying migration 0003."
         )
-    op.create_unique_constraint(
-        "uq_subject_semester_code",
+    op.create_index(
+        "uq_subject_semester_code_normalized",
         "subjects",
-        ["semester_id", "code"],
+        ["semester_id", sa.text("lower(trim(code))")],
+        unique=True,
     )
 
 
 def downgrade() -> None:
-    op.drop_constraint(
-        "uq_subject_semester_code",
-        "subjects",
-        type_="unique",
+    op.drop_index(
+        "uq_subject_semester_code_normalized",
+        table_name="subjects",
     )
