@@ -85,7 +85,16 @@ class Enrollment(Base):
     subject_id:Mapped[int]=mapped_column(ForeignKey("subjects.id"))
     section_id:Mapped[int|None]=mapped_column(ForeignKey("sections.id"),nullable=True)
     academic_year:Mapped[str]=mapped_column(String(20))
-    __table_args__=(UniqueConstraint("student_id","subject_id","academic_year"),)
+    __table_args__=(
+        UniqueConstraint("student_id","subject_id","academic_year"),
+        Index(
+            "uq_enrollment_normalized_year",
+            "student_id",
+            "subject_id",
+            func.lower(func.trim(column("academic_year"))),
+            unique=True,
+        ),
+    )
 class Resource(Base):
     __tablename__="resources"
     id:Mapped[int]=mapped_column(primary_key=True)
