@@ -460,6 +460,32 @@ def test_topic_schedule_and_status_validation(client):
     assert created.status_code == 200, created.text
     topic_id = created.json()["id"]
 
+    duplicate_topic = client.post(
+        "/api/topics",
+        headers=headers,
+        json={
+            "subject_id": 1,
+            "unit_number": 1,
+            "topic_name": " validated topic ",
+            "sequence_order": 2,
+            "estimated_hours": 1,
+        },
+    )
+    assert duplicate_topic.status_code == 409, duplicate_topic.text
+
+    blank_topic = client.post(
+        "/api/topics",
+        headers=headers,
+        json={
+            "subject_id": 1,
+            "unit_number": 1,
+            "topic_name": "   ",
+            "sequence_order": 2,
+            "estimated_hours": 1,
+        },
+    )
+    assert blank_topic.status_code == 400, blank_topic.text
+
     for invalid_patch in (
         {"estimated_hours": 0},
         {"estimated_hours": -2},
