@@ -382,6 +382,16 @@ def approve_resource_v2(resource_id: int, db: Session = Depends(get_db), u=Depen
 def compare_syllabus(p: SyllabusCompareRequest, db: Session = Depends(get_db), u=Depends(require_roles("ADMIN", "TEACHER"))):
     if not can_access_subject(db, u, p.subject_id):
         raise HTTPException(403, "Subject access denied")
+    if p.source_resource_id is not None:
+        source_resource = db.get(Resource, p.source_resource_id)
+        if not source_resource or source_resource.subject_id != p.subject_id:
+            raise HTTPException(400, "source_resource_id must belong to the requested subject")
+    latest_version = db.scalar(select(func.max(SyllabusVersion.version)).where(
+        SyllabusVersion.subject_id == p.subject_id
+    )) or 0
+    expected_version = latest_version + 1
+    if p.version is not None and p.version != expected_version:
+        raise HTTPException(409, f"Next syllabus version must be {expected_version}")
     active = db.scalar(select(SyllabusVersion).where(
         SyllabusVersion.subject_id == p.subject_id, SyllabusVersion.status == "ACTIVE"
     ).order_by(SyllabusVersion.version.desc()))
@@ -392,6 +402,11 @@ def compare_syllabus(p: SyllabusCompareRequest, db: Session = Depends(get_db), u
         except Exception:
             old = []
     new = [x.strip() for x in p.topic_names if x.strip()]
+    if not new:
+        raise HTTPException(400, "At least one syllabus topic is required")
+    normalized_new = [normalize_key(x) for x in new]
+    if len(normalized_new) != len(set(normalized_new)):
+        raise HTTPException(400, "Syllabus topics must be unique")
     old_map, new_map = {normalize_key(x): x for x in old}, {normalize_key(x): x for x in new}
     changes = []
     for k, v in new_map.items():
@@ -400,7 +415,7 @@ def compare_syllabus(p: SyllabusCompareRequest, db: Session = Depends(get_db), u
         else: changes.append(("UNCHANGED", v, v))
     for k, v in old_map.items():
         if k not in new_map: changes.append(("REMOVED", v, None))
-    version = p.version or ((active.version + 1) if active else 1)
+    version = expected_version
 
     # Keep the normalized Topic table synchronized with the active syllabus version.
     # Existing topics retain completion/progress; removed topics are archived and new
@@ -825,7 +840,8 @@ def submit_assignment(p: AssignmentSubmit, db: Session = Depends(get_db), u=Depe
     s = AssignmentSubmission(content_id=c.id, student_id=u.id, answer_text=p.answer_text.strip())
     db.add(s); db.flush()
     db.add(Progress(student_id=u.id, subject_id=c.subject_id, topic_id=c.topic_id,
-                    activity_type="ASSIGNMENT", score=0, max_score=100, completed=True))
+                    assignment_submission_id=s.id, activity_type="ASSIGNMENT",
+                    score=0, max_score=100, completed=True))
     audit(db, u, "SUBMIT_ASSIGNMENT", "ASSIGNMENT", c.id,
           json.dumps({"submission_id": s.id}))
     db.commit()
@@ -854,11 +870,26 @@ def grade_assignment(submission_id: int, p: GradeSubmission, db: Session = Depen
         raise HTTPException(400, "Score must be between 0 and 100")
     s.score, s.feedback = p.score, p.feedback
     progress = db.scalar(select(Progress).where(
-        Progress.student_id == s.student_id, Progress.subject_id == content.subject_id,
-        Progress.topic_id == content.topic_id, Progress.activity_type == "ASSIGNMENT"
-    ).order_by(Progress.id.desc()))
+        Progress.assignment_submission_id == s.id,
+        Progress.student_id == s.student_id,
+        Progress.subject_id == content.subject_id,
+        Progress.activity_type == "ASSIGNMENT",
+    ))
     if not progress:
-        raise HTTPException(409, "Assignment progress record not found")
+        # Older progress rows predate the explicit association. Only use a legacy
+        # row when the match is unambiguous; never grade an arbitrary assignment.
+        legacy = db.scalars(select(Progress).where(
+            Progress.assignment_submission_id.is_(None),
+            Progress.student_id == s.student_id,
+            Progress.subject_id == content.subject_id,
+            Progress.topic_id == content.topic_id,
+            Progress.activity_type == "ASSIGNMENT",
+        ).order_by(Progress.id.desc())).all()
+        if len(legacy) == 1:
+            progress = legacy[0]
+            progress.assignment_submission_id = s.id
+        else:
+            raise HTTPException(409, "Assignment progress cannot be matched unambiguously to this submission")
     progress.score, progress.max_score, progress.completed = p.score, 100, True
     audit(db, u, "GRADE_ASSIGNMENT", "ASSIGNMENT_SUBMISSION", s.id,
           json.dumps({"score": p.score}))
@@ -1001,6 +1032,8 @@ def generate_quiz(quiz_id: int, db: Session = Depends(get_db), u=Depends(require
     quiz = db.get(Quiz, quiz_id)
     if not quiz or not can_access_subject(db, u, quiz.subject_id):
         raise HTTPException(404, "Quiz not found")
+    if quiz.status != "DRAFT":
+        raise HTTPException(409, "Only DRAFT quizzes can be regenerated")
     contexts = approved_contexts(db, quiz.subject_id, "quiz assessment questions")
     if not contexts:
         raise HTTPException(409, APPROVED_RESOURCE_MESSAGE)
@@ -1008,13 +1041,14 @@ def generate_quiz(quiz_id: int, db: Session = Depends(get_db), u=Depends(require
                                "Generate 10 multiple-choice questions. Each must have four options and one correct answer.")
     if not data or not data.get("questions"):
         raise HTTPException(502, "Quiz generation failed")
+    valid_items = [item for item in data["questions"] if item.get("question") and item.get("answer")]
+    if not valid_items:
+        raise HTTPException(502, "Quiz generation returned no valid questions")
     for old in db.scalars(select(QuizQuestion).where(QuizQuestion.quiz_id == quiz.id)).all():
         db.delete(old)
     db.flush()
     topics = db.scalars(select(Topic).where(Topic.subject_id == quiz.subject_id, Topic.status == "ACTIVE")).all()
-    for item in data["questions"]:
-        if not item.get("question") or not item.get("answer"):
-            continue
+    for item in valid_items:
         topic = next((t for t in topics if normalize_key(t.topic_name) in normalize_key(item["question"])), None)
         options = item.get("options") or []
         db.add(QuizQuestion(quiz_id=quiz.id, topic_id=topic.id if topic else None,
