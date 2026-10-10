@@ -445,8 +445,9 @@ def test_assignment_and_enrollment_reject_sections_from_other_semesters(client):
     session = next(app.dependency_overrides[get_db]())
     try:
         subject = session.get(Subject, subject_id)
+        subject_semester = session.get(Semester, subject.semester_id)
         other_semester = Semester(
-            department_id=subject.semester_id and session.get(Semester, subject.semester_id).department_id,
+            department_id=subject_semester.department_id,
             academic_year="2027-28",
             semester_number=1,
             regulation="OTHER",
