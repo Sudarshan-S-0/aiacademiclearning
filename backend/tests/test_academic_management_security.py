@@ -108,6 +108,27 @@ def test_admin_only_user_and_academic_management():
         assert client.post("/api/subjects", headers=teacher_headers, json=subject_payload).status_code == 403
         assert client.post("/api/subjects", headers=student_headers, json=subject_payload).status_code == 403
 
+        # Database indexes must reject normalized duplicates even when bypassing the API.
+        constraint_db = SessionLocal()
+        constraint_db.add(Semester(
+            department_id=department_id,
+            academic_year=" 2026-27 ",
+            semester_number=1,
+            regulation="DUPLICATE",
+        ))
+        with pytest.raises(IntegrityError):
+            constraint_db.commit()
+        constraint_db.rollback()
+
+        from app.models.models import Section
+        constraint_db.add(Section(semester_id=semester_id, name="A"))
+        constraint_db.commit()
+        constraint_db.add(Section(semester_id=semester_id, name=" a "))
+        with pytest.raises(IntegrityError):
+            constraint_db.commit()
+        constraint_db.rollback()
+        constraint_db.close()
+
         created_subject = client.post("/api/subjects", headers=admin_headers, json=subject_payload)
         assert created_subject.status_code == 200, created_subject.text
         duplicate_subject = {**subject_payload, "code": " sec101 "}
