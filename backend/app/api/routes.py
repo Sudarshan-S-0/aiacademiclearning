@@ -226,6 +226,10 @@ def update_topic(topic_id:int,p:TopicUpdate,db:Session=Depends(get_db),u=Depends
         if completed_plan_id is not None:
             raise HTTPException(409,"Completed topics cannot be reopened; completed plan history is preserved")
     for k,v in updates.items():setattr(x,k,v)
+    if {"sequence_order", "estimated_hours", "completed", "status"}.intersection(updates):
+        # Topic edits that affect scheduling must update the plan in the same
+        # transaction, while retaining completed rows as historical records.
+        rebuild_teaching_plan(db,x.subject_id)
     audit(db,u,"UPDATE_TOPIC","TOPIC",x.id,json.dumps(updates));db.commit();return {"id":x.id,"updated":True}
 @router.post("/resources")
 async def upload_resource(subject_id:int,title:str|None=None,resource_type:str="REFERENCE",file:UploadFile=File(...),db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
