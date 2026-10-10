@@ -234,6 +234,9 @@ class GeneratedArtifact(Base):
 
 class AssignmentSubmission(Base):
     __tablename__="assignment_submissions"
+    __table_args__ = (
+        UniqueConstraint("content_id", "student_id", name="uq_assignment_submission_content_student"),
+    )
     id:Mapped[int]=mapped_column(primary_key=True)
     content_id:Mapped[int]=mapped_column(ForeignKey("content_items.id"))
     student_id:Mapped[int]=mapped_column(ForeignKey("users.id"))
