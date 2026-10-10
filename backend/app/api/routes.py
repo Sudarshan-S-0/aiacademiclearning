@@ -246,8 +246,8 @@ def create_content(p:ContentCreate,db:Session=Depends(get_db),u=Depends(require_
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
     if p.topic_id is not None:
         topic=db.get(Topic,p.topic_id)
-        if not topic or topic.subject_id != p.subject_id:
-            raise HTTPException(400,"topic_id must belong to the requested subject")
+        if not topic or topic.subject_id != p.subject_id or topic.status != "ACTIVE":
+            raise HTTPException(400,"topic_id must belong to the requested subject and be active")
     x=Content(**p.model_dump(),status="IN_REVIEW",created_by=u.id);db.add(x);db.flush();audit(db,u,"CREATE_CONTENT","CONTENT",x.id);db.commit();return {"id":x.id,"status":x.status}
 @router.post("/ai/ask")
 def ask_ai(p:AskRequest,db:Session=Depends(get_db),u=Depends(current_user)):
@@ -269,8 +269,8 @@ def generate_content(p:AIContentRequest,db:Session=Depends(get_db),u=Depends(req
     rs=db.scalars(select(Resource).where(Resource.subject_id==p.subject_id,Resource.status=="APPROVED")).all()
     if not rs:raise HTTPException(400,"Approve at least one academic resource before AI generation")
     topic=db.get(Topic,p.topic_id) if p.topic_id else None
-    if p.topic_id is not None and (not topic or topic.subject_id != p.subject_id):
-        raise HTTPException(400,"topic_id must belong to the requested subject")
+    if p.topic_id is not None and (not topic or topic.subject_id != p.subject_id or topic.status != "ACTIVE"):
+        raise HTTPException(400,"topic_id must belong to the requested subject and be active")
     query=f"Create {p.content_type} titled '{p.title or p.content_type}' for topic '{topic.topic_name if topic else 'the subject'}'. {p.instructions or ''}"
     hits=search_chunks(p.subject_id,query,top_k=12)
     contexts=approved_contexts_from_hits(db,p.subject_id,hits)
@@ -456,7 +456,7 @@ def add_quiz_question(quiz_id:int,p:QuizQuestionCreate,db:Session=Depends(get_db
         raise HTTPException(400,"correct_answer must match one of the options")
     if p.topic_id is not None:
         topic=db.get(Topic,p.topic_id)
-        if not topic or topic.subject_id != qz.subject_id:raise HTTPException(400,"topic_id must belong to the quiz subject")
+        if not topic or topic.subject_id != qz.subject_id or topic.status != "ACTIVE":raise HTTPException(400,"topic_id must belong to the quiz subject and be active")
     q=QuizQuestion(quiz_id=quiz_id,topic_id=p.topic_id,question_text=p.question_text.strip(),marks=p.marks,correct_answer=correct_answer,options_json=json.dumps(options));db.add(q);db.flush();audit(db,u,"ADD_QUIZ_QUESTION","QUIZ_QUESTION",q.id);db.commit();return {"id":q.id}
 @router.patch("/quizzes/{quiz_id}/status")
 def quiz_status(quiz_id:int,status:str=Query(...),db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
