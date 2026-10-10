@@ -1059,6 +1059,31 @@ def test_topic_completion_updates_plan_history_and_cannot_be_reopened(client):
     finally:
         db.close()
 
+    db = next(iter(app.dependency_overrides[get_db]()))
+    try:
+        plan_row = db.query(TeachingPlan).filter_by(
+            subject_id=1, topic_id=topic_id
+        ).one()
+        plan_row.actual_hours = 1.25
+        db.commit()
+    finally:
+        db.close()
+
+    repeated_completion = client.post(
+        "/api/teaching-plan/edit/1",
+        headers=headers,
+        json={"action": "COMPLETE", "topic_id": topic_id},
+    )
+    assert repeated_completion.status_code == 200, repeated_completion.text
+    db = next(iter(app.dependency_overrides[get_db]()))
+    try:
+        plan_row = db.query(TeachingPlan).filter_by(
+            subject_id=1, topic_id=topic_id
+        ).one()
+        assert plan_row.actual_hours == 1.25
+    finally:
+        db.close()
+
     reopened = client.patch(
         f"/api/topics/{topic_id}",
         headers=headers,
