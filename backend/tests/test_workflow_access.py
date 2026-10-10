@@ -791,6 +791,30 @@ def test_new_content_and_quiz_questions_reject_archived_topics(client):
     )
     assert content.status_code == 400, content.text
 
+    ai_content = client.post(
+        "/api/ai/generate",
+        headers=headers,
+        json={
+            "subject_id": 1,
+            "topic_id": topic_id,
+            "content_type": "NOTES",
+            "title": "AI content for archived topic",
+        },
+    )
+    assert ai_content.status_code == 400, ai_content.text
+
+    missing_topic_ai_content = client.post(
+        "/api/ai/generate",
+        headers=headers,
+        json={
+            "subject_id": 1,
+            "topic_id": 99999,
+            "content_type": "NOTES",
+            "title": "AI content for missing topic",
+        },
+    )
+    assert missing_topic_ai_content.status_code == 400, missing_topic_ai_content.text
+
     quiz = client.post(
         "/api/quizzes",
         headers=headers,
