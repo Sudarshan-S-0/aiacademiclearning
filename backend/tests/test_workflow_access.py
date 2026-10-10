@@ -486,6 +486,21 @@ def test_topic_schedule_and_status_validation(client):
     )
     assert blank_topic.status_code == 400, blank_topic.text
 
+    db = next(iter(app.dependency_overrides[get_db]()))
+    try:
+        db.add(Topic(
+            subject_id=1,
+            unit_number=1,
+            topic_name=" VALIDATED TOPIC ",
+            sequence_order=2,
+            estimated_hours=1,
+        ))
+        with pytest.raises(IntegrityError):
+            db.commit()
+        db.rollback()
+    finally:
+        db.close()
+
     for invalid_patch in (
         {"estimated_hours": 0},
         {"estimated_hours": -2},
