@@ -115,6 +115,45 @@ def test_resource_ai_publication_gates(monkeypatch):
             headers=th,
         )
         assert cannot_reapprove_archived.status_code == 409
+
+        # The legacy status endpoint must enforce the same version rules.
+        session = next(app.dependency_overrides[get_db]())
+        try:
+            teacher = session.query(User).filter_by(email="wf.teacher@example.com").one()
+            latest = Resource(
+                subject_id=subject_id,
+                uploaded_by=teacher.id,
+                title="Approved Notes",
+                resource_type="REFERENCE",
+                status="DRAFT",
+                extracted_text="Third version.",
+                page_count=1,
+                version=3,
+                parent_resource_id=newer_resource_id,
+            )
+            session.add(latest)
+            session.commit()
+            latest_resource_id = latest.id
+        finally:
+            session.close()
+
+        legacy_approval = client.patch(
+            f"/api/resources/{latest_resource_id}/status?status=APPROVED",
+            headers=th,
+        )
+        assert legacy_approval.status_code == 200, legacy_approval.text
+        session = next(app.dependency_overrides[get_db]())
+        try:
+            assert session.get(Resource, newer_resource_id).status == "ARCHIVED"
+            assert session.get(Resource, latest_resource_id).status == "APPROVED"
+        finally:
+            session.close()
+
+        legacy_reactivation = client.patch(
+            f"/api/resources/{resource_id}/status?status=APPROVED",
+            headers=th,
+        )
+        assert legacy_reactivation.status_code == 409
     app.dependency_overrides.clear()
     engine.dispose()
     if os.path.exists(db_path): os.remove(db_path)
