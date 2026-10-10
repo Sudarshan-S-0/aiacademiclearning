@@ -183,8 +183,18 @@ def test_resource_chunks_are_persisted_with_citations(monkeypatch):
         try: yield db
         finally: db.close()
     app.dependency_overrides[get_db]=override
-    monkeypatch.setattr("app.api.routes.put_object",lambda *a,**k:True)
+    legacy_storage_keys = []
+    v2_storage_keys = []
+    monkeypatch.setattr(
+        "app.api.routes.put_object",
+        lambda key, *a, **k: legacy_storage_keys.append(key) or True,
+    )
     monkeypatch.setattr("app.api.routes.upsert_chunks",lambda *a,**k:True)
+    monkeypatch.setattr(
+        "app.api.extended_routes.put_object",
+        lambda key, *a, **k: v2_storage_keys.append(key) or True,
+    )
+    monkeypatch.setattr("app.api.extended_routes.upsert_chunks",lambda *a,**k:True)
 
     with TestClient(app) as client:
         response=client.post("/api/auth/login",json={"email":"chunk.teacher@example.com","password":"Teacher@123"})
@@ -198,6 +208,27 @@ def test_resource_chunks_are_persisted_with_citations(monkeypatch):
         assert upload.status_code==200,upload.text
         data=upload.json()
         assert data["chunks"]>=1
+
+        # Same subject, same filename, and different titles must not overwrite
+        # each other's object in either upload endpoint.
+        second_upload=client.post(
+            f"/api/resources?subject_id={subject_id}&title=Notes%20Copy&resource_type=REFERENCE",
+            headers=headers,
+            files={"file":("notes.txt",b"Different material for another resource.","text/plain")},
+        )
+        assert second_upload.status_code==200,second_upload.text
+        assert len(legacy_storage_keys)==2
+        assert len(set(legacy_storage_keys))==2
+
+        for title in ("Notes V2", "Notes V2 Copy"):
+            v2_upload=client.post(
+                f"/api/resources/upload-v2?subject_id={subject_id}&title={title}&resource_type=REFERENCE",
+                headers=headers,
+                files={"file":("notes.txt",b"Another distinct resource.","text/plain")},
+            )
+            assert v2_upload.status_code==200,v2_upload.text
+        assert len(v2_storage_keys)==2
+        assert len(set(v2_storage_keys))==2
 
         chunks=client.get(f"/api/resources/{data['id']}/chunks",headers=headers)
         assert chunks.status_code==200,chunks.text
