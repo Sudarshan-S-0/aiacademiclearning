@@ -891,9 +891,12 @@ def edit_plan(subject_id: int, p: PlanEdit, db: Session = Depends(get_db), u=Dep
         t.status = "ARCHIVED"
     elif action == "COMPLETE":
         t.completed = True
-        for item in db.scalars(select(TeachingPlan).where(TeachingPlan.subject_id == subject_id, TeachingPlan.topic_id == t.id)).all():
-            item.status = "COMPLETED"
-            item.actual_hours = item.planned_hours
+        for item in db.scalars(select(TeachingPlan).where(
+            TeachingPlan.subject_id == subject_id, TeachingPlan.topic_id == t.id
+        )).all():
+            if item.status != "COMPLETED":
+                item.status = "COMPLETED"
+                item.actual_hours = item.planned_hours
     elif action == "MERGE" and p.note:
         t.topic_name = f"{t.topic_name} + {p.note}"
     elif action == "SPLIT" and p.note:
