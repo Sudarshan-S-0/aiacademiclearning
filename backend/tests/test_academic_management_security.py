@@ -129,6 +129,25 @@ def test_admin_only_user_and_academic_management():
         constraint_db.rollback()
         constraint_db.close()
 
+        # Normalized duplicates should return a conflict response, not a 500.
+        duplicate_semester_payload = {
+            "department_id": department_id,
+            "academic_year": " 2026-27 ",
+            "semester_number": 1,
+            "regulation": "DUPLICATE",
+        }
+        duplicate_semester_response = client.post(
+            "/api/semesters", headers=admin_headers, json=duplicate_semester_payload
+        )
+        assert duplicate_semester_response.status_code == 409, duplicate_semester_response.text
+
+        duplicate_section_response = client.post(
+            "/api/sections",
+            headers=admin_headers,
+            json={"semester_id": semester_id, "name": " a "},
+        )
+        assert duplicate_section_response.status_code == 409, duplicate_section_response.text
+
         created_subject = client.post("/api/subjects", headers=admin_headers, json=subject_payload)
         assert created_subject.status_code == 200, created_subject.text
         duplicate_subject = {**subject_payload, "code": " sec101 "}
