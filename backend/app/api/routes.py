@@ -150,10 +150,25 @@ def assignment(p:AssignmentCreate,db:Session=Depends(get_db),u=Depends(require_r
     if p.section_id is not None:
         section=db.get(Section,p.section_id)
         if not section or section.semester_id != subject.semester_id:raise HTTPException(400,"section_id must belong to the subject semester")
-    duplicate_query=select(TeacherSubject.id).where(TeacherSubject.teacher_id==p.teacher_id,TeacherSubject.subject_id==p.subject_id,TeacherSubject.academic_year==p.academic_year)
+    academic_year=p.academic_year.strip()
+    if not academic_year:raise HTTPException(400,"academic_year is required")
+    duplicate_query=select(TeacherSubject.id).where(
+        TeacherSubject.teacher_id==p.teacher_id,
+        TeacherSubject.subject_id==p.subject_id,
+        func.lower(func.trim(TeacherSubject.academic_year))==academic_year.lower(),
+    )
     duplicate_query=duplicate_query.where(TeacherSubject.section_id.is_(None) if p.section_id is None else TeacherSubject.section_id==p.section_id)
     if db.scalar(duplicate_query) is not None:raise HTTPException(409,"Teacher is already assigned to this subject, section, and academic year")
-    x=TeacherSubject(**p.model_dump());db.add(x);db.flush();audit(db,u,"ASSIGN_TEACHER","TEACHER_SUBJECT",x.id);db.commit();return {"id":x.id}
+    x=TeacherSubject(**{**p.model_dump(),"academic_year":academic_year})
+    try:
+        db.add(x)
+        db.flush()
+        audit(db,u,"ASSIGN_TEACHER","TEACHER_SUBJECT",x.id)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409,"Teacher is already assigned to this subject, section, and academic year")
+    return {"id":x.id}
 @router.post("/enrollments")
 def enrollment(p:EnrollmentCreate,db:Session=Depends(get_db),u=Depends(require_roles("ADMIN"))):
     student=db.get(User,p.student_id)
@@ -163,8 +178,23 @@ def enrollment(p:EnrollmentCreate,db:Session=Depends(get_db),u=Depends(require_r
     if p.section_id is not None:
         section=db.get(Section,p.section_id)
         if not section or section.semester_id != subject.semester_id:raise HTTPException(400,"section_id must belong to the subject semester")
-    if db.scalar(select(Enrollment.id).where(Enrollment.student_id==p.student_id,Enrollment.subject_id==p.subject_id,Enrollment.academic_year==p.academic_year)) is not None:raise HTTPException(409,"Student is already enrolled in this subject for this academic year")
-    x=Enrollment(**p.model_dump());db.add(x);db.flush();audit(db,u,"ENROLL_STUDENT","ENROLLMENT",x.id);db.commit();return {"id":x.id}
+    academic_year=p.academic_year.strip()
+    if not academic_year:raise HTTPException(400,"academic_year is required")
+    if db.scalar(select(Enrollment.id).where(
+        Enrollment.student_id==p.student_id,
+        Enrollment.subject_id==p.subject_id,
+        func.lower(func.trim(Enrollment.academic_year))==academic_year.lower(),
+    )) is not None:raise HTTPException(409,"Student is already enrolled in this subject for this academic year")
+    x=Enrollment(**{**p.model_dump(),"academic_year":academic_year})
+    try:
+        db.add(x)
+        db.flush()
+        audit(db,u,"ENROLL_STUDENT","ENROLLMENT",x.id)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409,"Student is already enrolled in this subject for this academic year")
+    return {"id":x.id}
 @router.post("/topics")
 def create_topic(p:TopicCreate,db:Session=Depends(get_db),u=Depends(require_roles("ADMIN","TEACHER"))):
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
