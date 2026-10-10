@@ -98,8 +98,10 @@ def summary(db:Session=Depends(get_db),u=Depends(current_user)):
     return result
 @router.post("/users")
 def create_user(p:UserCreate,db:Session=Depends(get_db),u=Depends(require_roles("ADMIN"))):
+    role=p.role.strip().upper()
+    if role not in {"ADMIN","TEACHER","STUDENT"}:raise HTTPException(400,"role must be ADMIN, TEACHER, or STUDENT")
     if db.scalar(select(User).where(User.email==p.email)):raise HTTPException(409,"Email exists")
-    x=User(full_name=p.full_name,email=p.email,password_hash=pwd.hash(p.password),role=p.role.upper());db.add(x);db.flush();audit(db,u,"CREATE_USER","USER",x.id);db.commit();return {"id":x.id,"name":x.full_name,"email":x.email,"role":x.role}
+    x=User(full_name=p.full_name,email=p.email,password_hash=pwd.hash(p.password),role=role);db.add(x);db.flush();audit(db,u,"CREATE_USER","USER",x.id);db.commit();return {"id":x.id,"name":x.full_name,"email":x.email,"role":x.role}
 @router.get("/users")
 def users(db:Session=Depends(get_db),u=Depends(require_roles("ADMIN"))):return [{"id":x.id,"name":x.full_name,"email":x.email,"role":x.role,"active":x.is_active} for x in db.scalars(select(User).order_by(User.id.desc())).all()]
 @router.post("/subjects")
@@ -116,12 +118,16 @@ def assignment(p:AssignmentCreate,db:Session=Depends(get_db),u=Depends(require_r
     teacher=db.get(User,p.teacher_id)
     if not teacher or teacher.role!="TEACHER":raise HTTPException(400,"teacher_id must belong to a teacher")
     if not db.get(Subject,p.subject_id):raise HTTPException(404,"Subject not found")
+    duplicate_query=select(TeacherSubject.id).where(TeacherSubject.teacher_id==p.teacher_id,TeacherSubject.subject_id==p.subject_id,TeacherSubject.academic_year==p.academic_year)
+    duplicate_query=duplicate_query.where(TeacherSubject.section_id.is_(None) if p.section_id is None else TeacherSubject.section_id==p.section_id)
+    if db.scalar(duplicate_query) is not None:raise HTTPException(409,"Teacher is already assigned to this subject, section, and academic year")
     x=TeacherSubject(**p.model_dump());db.add(x);db.flush();audit(db,u,"ASSIGN_TEACHER","TEACHER_SUBJECT",x.id);db.commit();return {"id":x.id}
 @router.post("/enrollments")
 def enrollment(p:EnrollmentCreate,db:Session=Depends(get_db),u=Depends(require_roles("ADMIN"))):
     student=db.get(User,p.student_id)
     if not student or student.role!="STUDENT":raise HTTPException(400,"student_id must belong to a student")
     if not db.get(Subject,p.subject_id):raise HTTPException(404,"Subject not found")
+    if db.scalar(select(Enrollment.id).where(Enrollment.student_id==p.student_id,Enrollment.subject_id==p.subject_id,Enrollment.academic_year==p.academic_year)) is not None:raise HTTPException(409,"Student is already enrolled in this subject for this academic year")
     x=Enrollment(**p.model_dump());db.add(x);db.flush();audit(db,u,"ENROLL_STUDENT","ENROLLMENT",x.id);db.commit();return {"id":x.id}
 @router.post("/topics")
 def create_topic(p:TopicCreate,db:Session=Depends(get_db),u=Depends(require_roles("ADMIN","TEACHER"))):
