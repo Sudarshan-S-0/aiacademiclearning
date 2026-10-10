@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from app.api.routes import pwd
 from app.db.session import Base, get_db
 from app.main import app
-from app.models.models import Department, Semester, Subject, User, Resource
+from app.models.models import Department, Semester, Subject, User, Resource, Topic, TeachingPlan
 
 
 @pytest.fixture()
@@ -101,6 +101,15 @@ def test_syllabus_compare_creates_and_versions_topics(client):
         "Unit 1 - Introduction",
         "Unit 2 - Architecture",
     ]
+    removed_topic_id = topics.json()[1]["id"]
+
+    generated_plan = test_client.post(
+        "/api/teaching-plan/generate",
+        headers=headers,
+        json={"subject_id": subject_id},
+    )
+    assert generated_plan.status_code == 200, generated_plan.text
+    assert any(row["topic_id"] == removed_topic_id for row in generated_plan.json())
 
     second = test_client.post(
         "/api/syllabus/compare-v2",
@@ -124,6 +133,20 @@ def test_syllabus_compare_creates_and_versions_topics(client):
         "Unit 1 - Introduction",
         "Unit 3 - Deployment",
     ]
+
+    db = next(app.dependency_overrides[get_db]())
+    try:
+        new_topic = db.query(Topic).filter_by(
+            subject_id=subject_id, topic_name="Unit 3 - Deployment"
+        ).one()
+        assert db.query(TeachingPlan).filter_by(
+            subject_id=subject_id, topic_id=removed_topic_id
+        ).filter(TeachingPlan.status != "COMPLETED").count() == 0
+        assert db.query(TeachingPlan).filter_by(
+            subject_id=subject_id, topic_id=new_topic.id
+        ).count() > 0
+    finally:
+        db.close()
 
 
 def test_syllabus_compare_rejects_foreign_resource_and_invalid_version(client):
