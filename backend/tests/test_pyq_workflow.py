@@ -126,3 +126,45 @@ def test_pyq_analytics_exposes_evidence_based_weightage_and_trends(client):
     assert data["repeated"][0]["count"] == 2
     assert data["repeated"][0]["years"] == [2024, 2025]
     assert any("high priority" in item for item in data["recommendations"])
+
+
+def test_pyq_rejects_topic_from_another_subject(client):
+    test_client, subject_id = client
+    headers = login(test_client)
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        current_subject = session.get(Subject, subject_id)
+        other_subject = Subject(
+            semester_id=current_subject.semester_id,
+            code="PYQOTHER",
+            name="Other PYQ Subject",
+            weeks=16,
+            hours_per_week=4,
+            lecture_duration_minutes=60,
+        )
+        session.add(other_subject)
+        session.flush()
+        foreign_topic = Topic(
+            subject_id=other_subject.id,
+            unit_number=1,
+            topic_name="Foreign Topic",
+            sequence_order=1,
+            estimated_hours=1,
+            status="ACTIVE",
+        )
+        session.add(foreign_topic)
+        session.commit()
+        foreign_topic_id = foreign_topic.id
+    finally:
+        session.close()
+
+    response = test_client.post(
+        "/api/pyq/questions",
+        headers=headers,
+        json={
+            "subject_id": subject_id,
+            "question_text": "A question with no matching foreign topic.",
+            "topic_id": foreign_topic_id,
+        },
+    )
+    assert response.status_code == 400
