@@ -771,12 +771,28 @@ def test_new_content_and_quiz_questions_reject_archived_topics(client):
     assert created_topic.status_code == 200, created_topic.text
     topic_id = created_topic.json()["id"]
 
+    generated_plan = client.post(
+        "/api/teaching-plan/generate",
+        headers=headers,
+        json={"subject_id": 1},
+    )
+    assert generated_plan.status_code == 200, generated_plan.text
+    assert any(row["topic_id"] == topic_id for row in generated_plan.json())
+
     archived = client.patch(
         f"/api/topics/{topic_id}",
         headers=headers,
         json={"status": "ARCHIVED"},
     )
     assert archived.status_code == 200, archived.text
+
+    db = next(iter(app.dependency_overrides[get_db]()))
+    try:
+        assert db.query(TeachingPlan).filter_by(
+            subject_id=1, topic_id=topic_id, status="PLANNED"
+        ).count() == 0
+    finally:
+        db.close()
 
     content = client.post(
         "/api/content",
