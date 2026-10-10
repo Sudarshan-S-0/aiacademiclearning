@@ -75,6 +75,46 @@ def test_resource_ai_publication_gates(monkeypatch):
         assert published.status_code==200, published.text
         visible=client.get(f"/api/content?subject_id={subject_id}",headers=sh)
         assert [x["title"] for x in visible.json()]==["Notes"]
+
+        # Approving a replacement resource version must archive the old approved
+        # version so retrieval cannot mix stale and current source material.
+        session = next(app.dependency_overrides[get_db]())
+        try:
+            teacher = session.query(User).filter_by(email="wf.teacher@example.com").one()
+            newer = Resource(
+                subject_id=subject_id,
+                uploaded_by=teacher.id,
+                title="Approved Notes",
+                resource_type="REFERENCE",
+                status="DRAFT",
+                extracted_text="Updated approved academic source.",
+                page_count=1,
+                version=2,
+                parent_resource_id=resource_id,
+            )
+            session.add(newer)
+            session.commit()
+            newer_resource_id = newer.id
+        finally:
+            session.close()
+
+        replacement_approval = client.patch(
+            f"/api/resources/{newer_resource_id}/approve-v2",
+            headers=th,
+        )
+        assert replacement_approval.status_code == 200, replacement_approval.text
+        session = next(app.dependency_overrides[get_db]())
+        try:
+            assert session.get(Resource, resource_id).status == "ARCHIVED"
+            assert session.get(Resource, newer_resource_id).status == "APPROVED"
+        finally:
+            session.close()
+
+        cannot_reapprove_archived = client.patch(
+            f"/api/resources/{resource_id}/approve-v2",
+            headers=th,
+        )
+        assert cannot_reapprove_archived.status_code == 409
     app.dependency_overrides.clear()
     engine.dispose()
     if os.path.exists(db_path): os.remove(db_path)
