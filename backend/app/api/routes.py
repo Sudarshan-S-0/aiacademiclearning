@@ -82,17 +82,24 @@ def health():return {"status":"ok","service":"ai-academic-learning"}
 def register(p:UserCreate,db:Session=Depends(get_db)):
     role=p.role.upper()
     if role != "STUDENT":raise HTTPException(403,"Public registration is limited to student accounts")
-    if db.scalar(select(User).where(User.email==p.email)):raise HTTPException(409,"Email already exists")
-    u=User(full_name=p.full_name,email=p.email,password_hash=pwd.hash(p.password),role=role)
-    db.add(u)
-    db.flush()
-    audit(db, None, "REGISTER_STUDENT", "USER", u.id)
-    db.commit()
+    email=str(p.email).strip().lower()
+    if db.scalar(select(User.id).where(func.lower(func.trim(User.email))==email)) is not None:
+        raise HTTPException(409,"Email already exists")
+    u=User(full_name=p.full_name,email=email,password_hash=pwd.hash(p.password),role=role)
+    try:
+        db.add(u)
+        db.flush()
+        audit(db, None, "REGISTER_STUDENT", "USER", u.id)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409,"Email already exists")
     db.refresh(u)
     return {"id":u.id,"email":u.email,"role":u.role}
 @router.post("/auth/login")
 def login(p:Login,db:Session=Depends(get_db)):
-    u=db.scalar(select(User).where(User.email==p.email))
+    email=str(p.email).strip().lower()
+    u=db.scalar(select(User).where(func.lower(func.trim(User.email))==email))
     if not u or not u.is_active or not u.password_hash or not pwd.verify(p.password,u.password_hash):raise HTTPException(401,"Invalid credentials")
     audit(db,u,"LOGIN","AUTH",u.id)
     db.commit()
@@ -108,8 +115,19 @@ def summary(db:Session=Depends(get_db),u=Depends(current_user)):
 def create_user(p:UserCreate,db:Session=Depends(get_db),u=Depends(require_roles("ADMIN"))):
     role=p.role.strip().upper()
     if role not in {"ADMIN","TEACHER","STUDENT"}:raise HTTPException(400,"role must be ADMIN, TEACHER, or STUDENT")
-    if db.scalar(select(User).where(User.email==p.email)):raise HTTPException(409,"Email exists")
-    x=User(full_name=p.full_name,email=p.email,password_hash=pwd.hash(p.password),role=role);db.add(x);db.flush();audit(db,u,"CREATE_USER","USER",x.id);db.commit();return {"id":x.id,"name":x.full_name,"email":x.email,"role":x.role}
+    email=str(p.email).strip().lower()
+    if db.scalar(select(User.id).where(func.lower(func.trim(User.email))==email)) is not None:
+        raise HTTPException(409,"Email exists")
+    x=User(full_name=p.full_name,email=email,password_hash=pwd.hash(p.password),role=role)
+    try:
+        db.add(x)
+        db.flush()
+        audit(db,u,"CREATE_USER","USER",x.id)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409,"Email exists")
+    return {"id":x.id,"name":x.full_name,"email":x.email,"role":x.role}
 @router.get("/users")
 def users(db:Session=Depends(get_db),u=Depends(require_roles("ADMIN"))):return [{"id":x.id,"name":x.full_name,"email":x.email,"role":x.role,"active":x.is_active} for x in db.scalars(select(User).order_by(User.id.desc())).all()]
 @router.post("/subjects")
