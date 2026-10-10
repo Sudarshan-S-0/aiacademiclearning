@@ -691,6 +691,10 @@ def update_content_status(content_id: int, p: ContentStatusUpdate, db: Session =
     }
     if target not in allowed.get(c.status, set()):
         raise HTTPException(409, f"Invalid content transition: {c.status} -> {target}")
+    if target in {"APPROVED", "PUBLISHED"} and c.topic_id is not None:
+        topic = db.get(Topic, c.topic_id)
+        if not topic or topic.subject_id != c.subject_id or topic.status != "ACTIVE":
+            raise HTTPException(409, "Content linked to an inactive topic cannot be approved or published")
     c.status = target
     audit(db, u, "CONTENT_STATUS_CHANGED", "CONTENT", c.id,
           json.dumps({"from": previous, "to": target}))
