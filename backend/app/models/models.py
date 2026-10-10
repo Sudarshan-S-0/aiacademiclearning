@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import String, Text, Integer, Float, Boolean, ForeignKey, DateTime, func, UniqueConstraint, Index
+from sqlalchemy import String, Text, Integer, Float, Boolean, ForeignKey, DateTime, func, UniqueConstraint, Index, column
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.session import Base
 
@@ -32,7 +32,7 @@ class Section(Base):
 class Subject(Base):
     __tablename__="subjects"
     __table_args__ = (
-        Index("uq_subject_semester_code_normalized", "semester_id", func.lower(func.trim("code")), unique=True),
+        Index("uq_subject_semester_code_normalized", "semester_id", func.lower(func.trim(column("code"))), unique=True),
     )
     id:Mapped[int]=mapped_column(primary_key=True)
     semester_id:Mapped[int]=mapped_column(ForeignKey("semesters.id"))
