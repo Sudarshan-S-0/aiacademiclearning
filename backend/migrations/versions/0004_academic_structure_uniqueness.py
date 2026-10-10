@@ -1,6 +1,6 @@
 """Enforce normalized semester and section uniqueness.
 
-Revision ID: 0004_academic_structure_uniqueness
+Revision ID: 0004_acad_structure_unique
 Revises: 0003_subject_semester_code
 """
 from typing import Sequence, Union
@@ -8,7 +8,7 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "0004_academic_structure_uniqueness"
+revision: str = "0004_acad_structure_unique"
 down_revision: Union[str, None] = "0003_subject_semester_code"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
