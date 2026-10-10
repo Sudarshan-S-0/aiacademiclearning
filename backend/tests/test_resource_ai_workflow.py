@@ -368,3 +368,44 @@ def test_legacy_ai_context_validation_rechecks_current_resource_status():
     assert contexts[0]["source"] == "Approved Notes"
     assert contexts[0]["text"] == "approved text"
     assert contexts[0]["citation"] == "page 2, Arrays"
+
+
+
+def test_extended_ai_retrieval_rejects_resource_from_another_subject(monkeypatch):
+    from types import SimpleNamespace
+    from app.api import extended_routes
+
+    class EmptyRows:
+        def all(self):
+            return []
+
+    class FakeDB:
+        def get(self, model, resource_id):
+            return SimpleNamespace(
+                id=resource_id,
+                subject_id=8,
+                status="APPROVED",
+                title="Private Subject Notes",
+            )
+
+        def execute(self, statement):
+            return EmptyRows()
+
+        def scalars(self, statement):
+            return EmptyRows()
+
+    # Simulate stale or corrupted vector metadata that claims this resource
+    # belongs to subject 7 even though the database says subject 8.
+    monkeypatch.setattr(
+        extended_routes,
+        "search_chunks",
+        lambda *args, **kwargs: [{
+            "status": "APPROVED",
+            "subject_id": 7,
+            "resource_id": 99,
+            "text": "private subject content",
+            "page": 1,
+        }],
+    )
+
+    assert extended_routes.approved_contexts(FakeDB(), 7, "question") == []
