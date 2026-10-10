@@ -31,6 +31,9 @@ class Section(Base):
     name:Mapped[str]=mapped_column(String(30))
 class Subject(Base):
     __tablename__="subjects"
+    __table_args__ = (
+        UniqueConstraint("semester_id", "code", name="uq_subject_semester_code"),
+    )
     id:Mapped[int]=mapped_column(primary_key=True)
     semester_id:Mapped[int]=mapped_column(ForeignKey("semesters.id"))
     code:Mapped[str]=mapped_column(String(30),index=True)
