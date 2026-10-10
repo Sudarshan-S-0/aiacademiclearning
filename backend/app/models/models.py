@@ -19,6 +19,15 @@ class Department(Base):
     name:Mapped[str]=mapped_column(String(150),unique=True)
 class Semester(Base):
     __tablename__="semesters"
+    __table_args__ = (
+        Index(
+            "uq_semester_department_year_number",
+            "department_id",
+            func.lower(func.trim(column("academic_year"))),
+            "semester_number",
+            unique=True,
+        ),
+    )
     id:Mapped[int]=mapped_column(primary_key=True)
     department_id:Mapped[int]=mapped_column(ForeignKey("departments.id"))
     academic_year:Mapped[str]=mapped_column(String(20))
@@ -26,6 +35,14 @@ class Semester(Base):
     regulation:Mapped[str|None]=mapped_column(String(40),nullable=True)
 class Section(Base):
     __tablename__="sections"
+    __table_args__ = (
+        Index(
+            "uq_section_semester_name_normalized",
+            "semester_id",
+            func.lower(func.trim(column("name"))),
+            unique=True,
+        ),
+    )
     id:Mapped[int]=mapped_column(primary_key=True)
     semester_id:Mapped[int]=mapped_column(ForeignKey("semesters.id"))
     name:Mapped[str]=mapped_column(String(30))
