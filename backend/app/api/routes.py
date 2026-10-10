@@ -206,7 +206,15 @@ def create_topic(p:TopicCreate,db:Session=Depends(get_db),u=Depends(require_role
     ))
     if duplicate is not None:raise HTTPException(409,"Topic name already exists for this subject")
     x=Topic(**{**p.model_dump(),"topic_name":topic_name})
-    db.add(x);db.flush();audit(db,u,"CREATE_TOPIC","TOPIC",x.id);db.commit();return {"id":x.id,"topic_name":x.topic_name}
+    try:
+        db.add(x)
+        db.flush()
+        audit(db,u,"CREATE_TOPIC","TOPIC",x.id)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409,"Topic name already exists for this subject")
+    return {"id":x.id,"topic_name":x.topic_name}
 @router.get("/subjects/{subject_id}/topics")
 def get_topics(subject_id:int,db:Session=Depends(get_db),u=Depends(current_user)):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
