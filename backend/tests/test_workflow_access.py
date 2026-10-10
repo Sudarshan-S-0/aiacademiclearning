@@ -1000,3 +1000,17 @@ def test_student_cannot_download_unlinked_legacy_artifact(client):
         headers=headers,
     )
     assert response.status_code == 403, response.text
+
+
+def test_ai_ask_v2_writes_audit_event(client, monkeypatch):
+    monkeypatch.setattr("app.api.extended_routes.approved_contexts", lambda *args: [])
+    monkeypatch.setattr("app.api.extended_routes.grounded_answer", lambda *args: {"answer": "ok"})
+    headers = login(client, "teacher@example.com", "Teacher@123")
+    response = client.post("/api/ai/ask-v2", params={"subject_id": 1, "question": "Explain SQL"}, headers=headers)
+    assert response.status_code == 200, response.text
+    db = next(iter(app.dependency_overrides[get_db]()))
+    try:
+        event = db.query(AuditLog).filter_by(action="AI_ASK", entity_type="SUBJECT", entity_id=1).first()
+        assert event is not None and event.details == "Explain SQL"
+    finally:
+        db.close()
