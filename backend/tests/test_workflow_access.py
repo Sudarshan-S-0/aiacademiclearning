@@ -779,12 +779,32 @@ def test_new_content_and_quiz_questions_reject_archived_topics(client):
     assert generated_plan.status_code == 200, generated_plan.text
     assert any(row["topic_id"] == topic_id for row in generated_plan.json())
 
+    preexisting_content = client.post(
+        "/api/content",
+        headers=headers,
+        json={
+            "subject_id": 1,
+            "topic_id": topic_id,
+            "title": "Content created before topic archive",
+            "content_type": "NOTES",
+            "body": "Review this content",
+        },
+    )
+    assert preexisting_content.status_code == 200, preexisting_content.text
+
     archived = client.patch(
         f"/api/topics/{topic_id}",
         headers=headers,
         json={"status": "ARCHIVED"},
     )
     assert archived.status_code == 200, archived.text
+
+    approval = client.patch(
+        f"/api/content/{preexisting_content.json()['id']}/status",
+        headers=headers,
+        json={"status": "APPROVED"},
+    )
+    assert approval.status_code == 409, approval.text
 
     db = next(iter(app.dependency_overrides[get_db]()))
     try:
