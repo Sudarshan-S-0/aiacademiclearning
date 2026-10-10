@@ -307,3 +307,51 @@ def test_quiz_lifecycle_and_student_publication_gate(client):
         headers=admin_headers,
     )
     assert invalid_republish.status_code == 409
+
+
+def test_invalid_ai_questions_do_not_delete_existing_draft_questions(client, monkeypatch):
+    from app.api import extended_routes
+
+    test_client, subject_id = client
+    admin_headers = login(test_client, "quiz-admin@example.com", "Admin@123")
+    created = test_client.post(
+        "/api/quizzes",
+        headers=admin_headers,
+        json={"subject_id": subject_id, "title": "Draft Quiz", "duration_minutes": 20},
+    )
+    assert created.status_code == 200, created.text
+    quiz_id = created.json()["id"]
+    question = test_client.post(
+        f"/api/quizzes/{quiz_id}/questions",
+        headers=admin_headers,
+        json={
+            "question_text": "Existing question?",
+            "marks": 1,
+            "correct_answer": "Yes",
+            "options": ["Yes", "No", "Maybe", "Unknown"],
+            "topic_id": 1,
+        },
+    )
+    assert question.status_code == 200, question.text
+    question_id = question.json()["id"]
+
+    monkeypatch.setattr(
+        extended_routes,
+        "approved_contexts",
+        lambda *args, **kwargs: [{"status": "APPROVED", "source": "Notes", "text": "Grounded context."}],
+    )
+    monkeypatch.setattr(
+        extended_routes,
+        "generate_structured",
+        lambda *args, **kwargs: {"questions": [{"question": "Invalid question?", "answer": "A", "options": ["A", "B"]}]},
+    )
+
+    generated = test_client.post(
+        f"/api/quizzes/{quiz_id}/generate",
+        headers=admin_headers,
+    )
+    assert generated.status_code == 502
+
+    detail = test_client.get(f"/api/quizzes/{quiz_id}", headers=admin_headers)
+    assert detail.status_code == 200, detail.text
+    assert [item["id"] for item in detail.json()["questions"]] == [question_id]
