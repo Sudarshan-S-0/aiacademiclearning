@@ -115,7 +115,7 @@ def approved_contexts(db: Session, subject_id: int, query: str, top_k: int = 8):
             continue
         rid = p.get("resource_id")
         r = db.get(Resource, rid) if rid else None
-        if not r or r.status != "APPROVED":
+        if not r or r.subject_id != subject_id or r.status != "APPROVED":
             continue
         key = (rid, p.get("page"), p.get("section"), p.get("text", "")[:80])
         if key in seen:
@@ -133,7 +133,7 @@ def approved_contexts(db: Session, subject_id: int, query: str, top_k: int = 8):
     rows = db.execute(
         select(ResourceChunk, Resource)
         .join(Resource, Resource.id == ResourceChunk.resource_id)
-        .where(ResourceChunk.subject_id == subject_id, Resource.status == "APPROVED")
+        .where(ResourceChunk.subject_id == subject_id, Resource.subject_id == subject_id, Resource.status == "APPROVED")
         .order_by(ResourceChunk.id.desc())
         .limit(top_k)
     ).all()
