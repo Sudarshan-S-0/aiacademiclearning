@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 import math
 from collections import Counter, defaultdict
-import json, re
+import json, re, uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from pydantic import BaseModel
 from sqlalchemy import select, func
@@ -346,7 +346,8 @@ async def upload_resource_v2(subject_id: int, title: str, resource_type: str = "
     version = (latest.version + 1) if latest else 1
     text, pages = extract_text(file.filename, data)
     sections, _ = extract_sections(file.filename, data)
-    key = f"subjects/{subject_id}/resources/{version}-{re.sub(r'[^a-zA-Z0-9._-]', '_', file.filename)}"
+    safe_filename = re.sub(r"[^a-zA-Z0-9._-]", "_", file.filename)
+    key = f"subjects/{subject_id}/resources/{version}-{uuid.uuid4().hex}-{safe_filename}"
     stored = put_object(key, data, file.content_type or "application/octet-stream")
     if not stored:
         raise HTTPException(503, "Object storage is unavailable; resource was not saved")
