@@ -387,3 +387,48 @@ def test_grading_updates_only_the_progress_for_that_submission(client):
         assert second_progress.score == 0
     finally:
         session.close()
+
+
+def test_admin_rejects_unknown_roles_and_duplicate_academic_links(client):
+    test_client, subject_id, _ = client
+    admin_headers = login(test_client, "assignment-admin@example.com", "Admin@123")
+    teacher_headers = login(test_client, "assignment-teacher@example.com", "Teacher@123")
+    student_headers = login(test_client, "assignment-student@example.com", "Student@123")
+    teacher_id = test_client.get("/api/me", headers=teacher_headers).json()["id"]
+    student_id = test_client.get("/api/me", headers=student_headers).json()["id"]
+
+    invalid_role = test_client.post(
+        "/api/users",
+        headers=admin_headers,
+        json={
+            "full_name": "Invalid Role",
+            "email": "invalid-role@example.com",
+            "password": "InvalidRole@123",
+            "role": "SUPERUSER",
+        },
+    )
+    assert invalid_role.status_code == 400
+
+    duplicate_assignment = test_client.post(
+        "/api/assignments",
+        headers=admin_headers,
+        json={
+            "teacher_id": teacher_id,
+            "subject_id": subject_id,
+            "section_id": None,
+            "academic_year": "2026-27",
+        },
+    )
+    assert duplicate_assignment.status_code == 409
+
+    duplicate_enrollment = test_client.post(
+        "/api/enrollments",
+        headers=admin_headers,
+        json={
+            "student_id": student_id,
+            "subject_id": subject_id,
+            "section_id": None,
+            "academic_year": "2026-27",
+        },
+    )
+    assert duplicate_enrollment.status_code == 409
