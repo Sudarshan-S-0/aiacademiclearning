@@ -138,6 +138,32 @@ def test_quiz_lifecycle_and_student_publication_gate(client):
     )
     assert empty_publish.status_code == 400
 
+    invalid_options = test_client.post(
+        f"/api/quizzes/{quiz_id}/questions",
+        headers=admin_headers,
+        json={
+            "question_text": "Invalid question with duplicate options?",
+            "marks": 1,
+            "correct_answer": "A",
+            "options": ["A", "A", "B", "C"],
+            "topic_id": 1,
+        },
+    )
+    assert invalid_options.status_code == 400
+
+    invalid_answer = test_client.post(
+        f"/api/quizzes/{quiz_id}/questions",
+        headers=admin_headers,
+        json={
+            "question_text": "Correct answer is not an option?",
+            "marks": 1,
+            "correct_answer": "Z",
+            "options": ["A", "B", "C", "D"],
+            "topic_id": 1,
+        },
+    )
+    assert invalid_answer.status_code == 400
+
     question = test_client.post(
         f"/api/quizzes/{quiz_id}/questions",
         headers=admin_headers,
