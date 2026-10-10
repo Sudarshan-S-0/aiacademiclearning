@@ -1045,10 +1045,16 @@ def generate_quiz(quiz_id: int, db: Session = Depends(get_db), u=Depends(require
         raise HTTPException(502, "Quiz generation failed")
     valid_items = []
     for item in data["questions"]:
+        if not isinstance(item, dict):
+            continue
         question = str(item.get("question") or "").strip()
         answer = str(item.get("answer") or "").strip()
         options = item.get("options")
-        if not question or not answer or not isinstance(options, list) or len(options) != 4:
+        try:
+            marks = int(item.get("marks", 1))
+        except (TypeError, ValueError):
+            continue
+        if not question or not answer or marks <= 0 or not isinstance(options, list) or len(options) != 4:
             continue
         options = [str(option).strip() for option in options]
         normalized_options = [option.casefold() for option in options]
@@ -1057,7 +1063,7 @@ def generate_quiz(quiz_id: int, db: Session = Depends(get_db), u=Depends(require
         matched_answer = next((option for option in options if option.casefold() == answer.casefold()), None)
         if matched_answer is None:
             continue
-        valid_items.append({**item, "question": question, "answer": matched_answer, "options": options})
+        valid_items.append({**item, "question": question, "answer": matched_answer, "options": options, "marks": marks})
     if not valid_items:
         raise HTTPException(502, "Quiz generation returned no valid four-option questions with matching answers")
     for old in db.scalars(select(QuizQuestion).where(QuizQuestion.quiz_id == quiz.id)).all():
