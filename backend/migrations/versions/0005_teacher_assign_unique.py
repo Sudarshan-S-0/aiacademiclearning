@@ -34,6 +34,24 @@ def upgrade() -> None:
             f"count={duplicate.row_count}. Reconcile duplicates before retrying migration 0005."
         )
 
+    duplicate_enrollment = bind.execute(sa.text(
+        """
+        SELECT student_id, subject_id, lower(trim(academic_year)) AS normalized_year,
+               COUNT(*) AS row_count
+        FROM student_enrollments
+        GROUP BY student_id, subject_id, lower(trim(academic_year))
+        HAVING COUNT(*) > 1
+        LIMIT 1
+        """
+    )).first()
+    if duplicate_enrollment:
+        raise RuntimeError(
+            "Cannot enforce unique student enrollments: "
+            f"student_id={duplicate_enrollment.student_id}, subject_id={duplicate_enrollment.subject_id}, "
+            f"academic_year={duplicate_enrollment.normalized_year}, count={duplicate_enrollment.row_count}. "
+            "Reconcile duplicates before retrying migration 0005."
+        )
+
     op.create_index(
         "uq_teacher_assignment_normalized",
         "teacher_subject_assignments",
@@ -45,7 +63,14 @@ def upgrade() -> None:
         ],
         unique=True,
     )
+    op.create_index(
+        "uq_enrollment_normalized_year",
+        "student_enrollments",
+        ["student_id", "subject_id", sa.text("lower(trim(academic_year))")],
+        unique=True,
+    )
 
 
 def downgrade() -> None:
+    op.drop_index("uq_enrollment_normalized_year", table_name="student_enrollments")
     op.drop_index("uq_teacher_assignment_normalized", table_name="teacher_subject_assignments")
