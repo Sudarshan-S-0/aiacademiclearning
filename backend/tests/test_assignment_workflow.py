@@ -432,3 +432,55 @@ def test_admin_rejects_unknown_roles_and_duplicate_academic_links(client):
         },
     )
     assert duplicate_enrollment.status_code == 409
+
+
+def test_assignment_and_enrollment_reject_sections_from_other_semesters(client):
+    test_client, subject_id, _ = client
+    admin_headers = login(test_client, "assignment-admin@example.com", "Admin@123")
+    teacher_headers = login(test_client, "assignment-teacher@example.com", "Teacher@123")
+    student_headers = login(test_client, "assignment-student@example.com", "Student@123")
+    teacher_id = test_client.get("/api/me", headers=teacher_headers).json()["id"]
+    student_id = test_client.get("/api/me", headers=student_headers).json()["id"]
+
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        subject = session.get(Subject, subject_id)
+        other_semester = Semester(
+            department_id=subject.semester_id and session.get(Semester, subject.semester_id).department_id,
+            academic_year="2027-28",
+            semester_number=1,
+            regulation="OTHER",
+        )
+        session.add(other_semester)
+        session.flush()
+        from app.models.models import Section
+        other_section = Section(semester_id=other_semester.id, name="OTHER-A")
+        session.add(other_section)
+        session.commit()
+        other_section_id = other_section.id
+    finally:
+        session.close()
+
+    assignment = test_client.post(
+        "/api/assignments",
+        headers=admin_headers,
+        json={
+            "teacher_id": teacher_id,
+            "subject_id": subject_id,
+            "section_id": other_section_id,
+            "academic_year": "2026-27",
+        },
+    )
+    assert assignment.status_code == 400, assignment.text
+
+    enrollment = test_client.post(
+        "/api/enrollments",
+        headers=admin_headers,
+        json={
+            "student_id": student_id,
+            "subject_id": subject_id,
+            "section_id": other_section_id,
+            "academic_year": "2026-27",
+        },
+    )
+    assert enrollment.status_code == 400, enrollment.text
