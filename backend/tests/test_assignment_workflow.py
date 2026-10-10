@@ -1,15 +1,18 @@
+import json
 import os
 import tempfile
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from app.api.routes import pwd
 from app.db.session import Base, get_db
 from app.main import app
 from app.models.models import (
+    AssignmentSubmission,
     Content,
     Department,
     Enrollment,
@@ -18,6 +21,7 @@ from app.models.models import (
     TeacherSubject,
     Topic,
     User,
+    Progress,
 )
 
 
@@ -194,6 +198,23 @@ def test_assignment_submission_grading_and_object_isolation(client):
     )
     assert duplicate.status_code == 409
 
+    # API pre-checks improve the response, but the database constraint must
+    # independently protect against concurrent requests that pass that check.
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        session.add(AssignmentSubmission(
+            content_id=assignment_id,
+            student_id=session.query(User).filter_by(
+                email="assignment-student@example.com"
+            ).one().id,
+            answer_text="Concurrent duplicate",
+        ))
+        with pytest.raises(IntegrityError):
+            session.commit()
+        session.rollback()
+    finally:
+        session.close()
+
     outsider_submit = test_client.post(
         "/api/assignments/submit",
         headers=outsider_student_headers,
@@ -226,6 +247,17 @@ def test_assignment_submission_grading_and_object_isolation(client):
         json={"score": 101, "feedback": "Invalid"},
     )
     assert invalid_score.status_code == 400
+
+    for non_finite_score in (float("nan"), float("inf"), float("-inf")):
+        response = test_client.patch(
+            f"/api/assignments/submissions/{submission_id}/grade",
+            headers={**teacher_headers, "Content-Type": "application/json"},
+            content=json.dumps(
+                {"score": non_finite_score, "feedback": "Invalid non-finite score"},
+                allow_nan=True,
+            ),
+        )
+        assert response.status_code == 400, response.text
 
     outsider_grade = test_client.patch(
         f"/api/assignments/submissions/{submission_id}/grade",
@@ -325,3 +357,162 @@ def test_assignment_submission_grading_and_object_isolation(client):
         headers=student_headers,
     )
     assert student_admin_analytics.status_code == 403
+
+
+def test_grading_updates_only_the_progress_for_that_submission(client):
+    test_client, subject_id, first_assignment_id = client
+    student_headers = login(test_client, "assignment-student@example.com", "Student@123")
+    teacher_headers = login(test_client, "assignment-teacher@example.com", "Teacher@123")
+    student_id = test_client.get("/api/me", headers=student_headers).json()["id"]
+
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        first_assignment = session.get(Content, first_assignment_id)
+        second_assignment = Content(
+            subject_id=subject_id,
+            topic_id=first_assignment.topic_id,
+            title="Second Array Assignment",
+            content_type="ASSIGNMENT",
+            body="Explain array traversal.",
+            status="PUBLISHED",
+            version=1,
+            generated_by_ai=False,
+            created_by=first_assignment.created_by,
+        )
+        session.add(second_assignment)
+        session.commit()
+        second_assignment_id = second_assignment.id
+    finally:
+        session.close()
+
+    first_submission = test_client.post(
+        "/api/assignments/submit",
+        headers=student_headers,
+        json={"content_id": first_assignment_id, "answer_text": "First assignment answer."},
+    )
+    second_submission = test_client.post(
+        "/api/assignments/submit",
+        headers=student_headers,
+        json={"content_id": second_assignment_id, "answer_text": "Second assignment answer."},
+    )
+    assert first_submission.status_code == 200, first_submission.text
+    assert second_submission.status_code == 200, second_submission.text
+
+    graded = test_client.patch(
+        f"/api/assignments/submissions/{first_submission.json()['submission_id']}/grade",
+        headers=teacher_headers,
+        json={"score": 91, "feedback": "First assignment graded."},
+    )
+    assert graded.status_code == 200, graded.text
+
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        first_progress = session.query(Progress).filter(
+            Progress.assignment_submission_id == first_submission.json()["submission_id"]
+        ).one()
+        second_progress = session.query(Progress).filter(
+            Progress.assignment_submission_id == second_submission.json()["submission_id"]
+        ).one()
+        assert first_progress.student_id == student_id
+        assert first_progress.score == 91
+        assert second_progress.score == 0
+    finally:
+        session.close()
+
+
+def test_admin_rejects_unknown_roles_and_duplicate_academic_links(client):
+    test_client, subject_id, _ = client
+    admin_headers = login(test_client, "assignment-admin@example.com", "Admin@123")
+    teacher_headers = login(test_client, "assignment-teacher@example.com", "Teacher@123")
+    student_headers = login(test_client, "assignment-student@example.com", "Student@123")
+    teacher_id = test_client.get("/api/me", headers=teacher_headers).json()["id"]
+    student_id = test_client.get("/api/me", headers=student_headers).json()["id"]
+
+    invalid_role = test_client.post(
+        "/api/users",
+        headers=admin_headers,
+        json={
+            "full_name": "Invalid Role",
+            "email": "invalid-role@example.com",
+            "password": "InvalidRole@123",
+            "role": "SUPERUSER",
+        },
+    )
+    assert invalid_role.status_code == 400
+
+    duplicate_assignment = test_client.post(
+        "/api/assignments",
+        headers=admin_headers,
+        json={
+            "teacher_id": teacher_id,
+            "subject_id": subject_id,
+            "section_id": None,
+            "academic_year": "2026-27",
+        },
+    )
+    assert duplicate_assignment.status_code == 409
+
+    duplicate_enrollment = test_client.post(
+        "/api/enrollments",
+        headers=admin_headers,
+        json={
+            "student_id": student_id,
+            "subject_id": subject_id,
+            "section_id": None,
+            "academic_year": "2026-27",
+        },
+    )
+    assert duplicate_enrollment.status_code == 409
+
+
+def test_assignment_and_enrollment_reject_sections_from_other_semesters(client):
+    test_client, subject_id, _ = client
+    admin_headers = login(test_client, "assignment-admin@example.com", "Admin@123")
+    teacher_headers = login(test_client, "assignment-teacher@example.com", "Teacher@123")
+    student_headers = login(test_client, "assignment-student@example.com", "Student@123")
+    teacher_id = test_client.get("/api/me", headers=teacher_headers).json()["id"]
+    student_id = test_client.get("/api/me", headers=student_headers).json()["id"]
+
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        subject = session.get(Subject, subject_id)
+        subject_semester = session.get(Semester, subject.semester_id)
+        other_semester = Semester(
+            department_id=subject_semester.department_id,
+            academic_year="2027-28",
+            semester_number=1,
+            regulation="OTHER",
+        )
+        session.add(other_semester)
+        session.flush()
+        from app.models.models import Section
+        other_section = Section(semester_id=other_semester.id, name="OTHER-A")
+        session.add(other_section)
+        session.commit()
+        other_section_id = other_section.id
+    finally:
+        session.close()
+
+    assignment = test_client.post(
+        "/api/assignments",
+        headers=admin_headers,
+        json={
+            "teacher_id": teacher_id,
+            "subject_id": subject_id,
+            "section_id": other_section_id,
+            "academic_year": "2026-27",
+        },
+    )
+    assert assignment.status_code == 400, assignment.text
+
+    enrollment = test_client.post(
+        "/api/enrollments",
+        headers=admin_headers,
+        json={
+            "student_id": student_id,
+            "subject_id": subject_id,
+            "section_id": other_section_id,
+            "academic_year": "2026-27",
+        },
+    )
+    assert enrollment.status_code == 400, enrollment.text

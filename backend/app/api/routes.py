@@ -1,9 +1,11 @@
 from datetime import datetime,timedelta,timezone
-import json,re,jwt
+from typing import Literal
+import json,re,jwt,uuid
 from fastapi import APIRouter,Depends,HTTPException,UploadFile,File,Header,Query
 from passlib.context import CryptContext
 from pydantic import BaseModel,EmailStr,Field
 from sqlalchemy import select,func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.session import get_db
@@ -15,14 +17,14 @@ from app.services.qdrant import upsert_chunks,search_chunks
 router=APIRouter(prefix="/api");pwd=CryptContext(schemes=["bcrypt"],deprecated="auto")
 class Login(BaseModel): email:EmailStr;password:str
 class UserCreate(BaseModel): full_name:str=Field(min_length=2);email:EmailStr;password:str=Field(min_length=8);role:str
-class SubjectCreate(BaseModel): semester_id:int;code:str;name:str;description:str|None=None;weeks:int=16;hours_per_week:int=4;lecture_duration_minutes:int=60
+class SubjectCreate(BaseModel): semester_id:int=Field(ge=1);code:str=Field(min_length=1,max_length=30);name:str=Field(min_length=1,max_length=200);description:str|None=None;weeks:int=Field(default=16,ge=1);hours_per_week:int=Field(default=4,gt=0);lecture_duration_minutes:int=Field(default=60,gt=0)
 class AssignmentCreate(BaseModel): teacher_id:int;subject_id:int;section_id:int|None=None;academic_year:str
 class EnrollmentCreate(BaseModel): student_id:int;subject_id:int;section_id:int|None=None;academic_year:str
-class TopicCreate(BaseModel): subject_id:int;unit_number:int;topic_name:str;sequence_order:int;estimated_hours:float=1
-class TopicUpdate(BaseModel): sequence_order:int|None=None;estimated_hours:float|None=None;completed:bool|None=None;status:str|None=None
+class TopicCreate(BaseModel): subject_id:int;unit_number:int=Field(ge=1);topic_name:str=Field(min_length=1);sequence_order:int=Field(ge=1);estimated_hours:float=Field(default=1,gt=0,allow_inf_nan=False)
+class TopicUpdate(BaseModel): sequence_order:int|None=Field(default=None,ge=1);estimated_hours:float|None=Field(default=None,gt=0,allow_inf_nan=False);completed:bool|None=None;status:Literal["ACTIVE","ARCHIVED"]|None=None
 class ContentCreate(BaseModel): subject_id:int;topic_id:int|None=None;title:str;content_type:str;body:str;source_reference:str|None=None;generated_by_ai:bool=False
 class PublishAction(BaseModel): status:str
-class PYQCreate(BaseModel): subject_id:int;year:int|None=None;question_no:str|None=None;question_text:str;marks:float=1;topic_id:int|None=None;unit_number:int|None=None
+class PYQCreate(BaseModel): subject_id:int=Field(ge=1);year:int|None=Field(default=None,ge=1900,le=2100);question_no:str|None=None;question_text:str=Field(min_length=1);marks:float=Field(default=1,gt=0,allow_inf_nan=False);topic_id:int|None=Field(default=None,ge=1);unit_number:int|None=Field(default=None,ge=1)
 class PlanAction(BaseModel): action:str;topic_id:int;value:float|int|None=None;new_week:int|None=None;note:str|None=None
 class QuizCreate(BaseModel): subject_id:int;title:str;duration_minutes:int=30;status:str="DRAFT"
 class QuizQuestionCreate(BaseModel): topic_id:int|None=None;question_text:str;marks:int=1;correct_answer:str;options:list[str]|None=None
@@ -60,18 +62,45 @@ def can_access_subject(db,u,subject_id):
     if u.role=="TEACHER":return db.scalar(select(TeacherSubject.id).where(TeacherSubject.teacher_id==u.id,TeacherSubject.subject_id==subject_id)) is not None
     if u.role=="STUDENT":return db.scalar(select(Enrollment.id).where(Enrollment.student_id==u.id,Enrollment.subject_id==subject_id)) is not None
     return False
+def approved_contexts_from_hits(db,subject_id,hits):
+    contexts=[]
+    for hit in hits:
+        if hit.get("status")!="APPROVED" or hit.get("subject_id")!=subject_id:
+            continue
+        resource_id=hit.get("resource_id")
+        resource=db.get(Resource,resource_id) if resource_id else None
+        if not resource or resource.subject_id!=subject_id or resource.status!="APPROVED":
+            continue
+        page=hit.get("page")
+        section=hit.get("section")
+        citation=f"page {page}, {section}" if page and section else section or (f"page {page}" if page else resource.title)
+        contexts.append({"status":"APPROVED","source":resource.title,"text":hit.get("text",""),"citation":citation})
+    return contexts
 @router.get("/health")
 def health():return {"status":"ok","service":"ai-academic-learning"}
 @router.post("/auth/register")
 def register(p:UserCreate,db:Session=Depends(get_db)):
     role=p.role.upper()
     if role != "STUDENT":raise HTTPException(403,"Public registration is limited to student accounts")
-    if db.scalar(select(User).where(User.email==p.email)):raise HTTPException(409,"Email already exists")
-    u=User(full_name=p.full_name,email=p.email,password_hash=pwd.hash(p.password),role=role);db.add(u);db.commit();db.refresh(u);return {"id":u.id,"email":u.email,"role":u.role}
+    email=str(p.email).strip().lower()
+    if db.scalar(select(User.id).where(func.lower(func.trim(User.email))==email)) is not None:
+        raise HTTPException(409,"Email already exists")
+    u=User(full_name=p.full_name,email=email,password_hash=pwd.hash(p.password),role=role)
+    try:
+        db.add(u)
+        db.flush()
+        audit(db, None, "REGISTER_STUDENT", "USER", u.id)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409,"Email already exists")
+    db.refresh(u)
+    return {"id":u.id,"email":u.email,"role":u.role}
 @router.post("/auth/login")
 def login(p:Login,db:Session=Depends(get_db)):
-    u=db.scalar(select(User).where(User.email==p.email))
-    if not u or not u.password_hash or not pwd.verify(p.password,u.password_hash):raise HTTPException(401,"Invalid credentials")
+    email=str(p.email).strip().lower()
+    u=db.scalar(select(User).where(func.lower(func.trim(User.email))==email))
+    if not u or not u.is_active or not u.password_hash or not pwd.verify(p.password,u.password_hash):raise HTTPException(401,"Invalid credentials")
     audit(db,u,"LOGIN","AUTH",u.id)
     db.commit()
     return {"access_token":token_for(u),"token_type":"bearer","user":{"id":u.id,"name":u.full_name,"role":u.role}}
@@ -84,13 +113,46 @@ def summary(db:Session=Depends(get_db),u=Depends(current_user)):
     return result
 @router.post("/users")
 def create_user(p:UserCreate,db:Session=Depends(get_db),u=Depends(require_roles("ADMIN"))):
-    if db.scalar(select(User).where(User.email==p.email)):raise HTTPException(409,"Email exists")
-    x=User(full_name=p.full_name,email=p.email,password_hash=pwd.hash(p.password),role=p.role.upper());db.add(x);db.flush();audit(db,u,"CREATE_USER","USER",x.id);db.commit();return {"id":x.id,"name":x.full_name,"email":x.email,"role":x.role}
+    role=p.role.strip().upper()
+    if role not in {"ADMIN","TEACHER","STUDENT"}:raise HTTPException(400,"role must be ADMIN, TEACHER, or STUDENT")
+    email=str(p.email).strip().lower()
+    if db.scalar(select(User.id).where(func.lower(func.trim(User.email))==email)) is not None:
+        raise HTTPException(409,"Email exists")
+    x=User(full_name=p.full_name,email=email,password_hash=pwd.hash(p.password),role=role)
+    try:
+        db.add(x)
+        db.flush()
+        audit(db,u,"CREATE_USER","USER",x.id)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409,"Email exists")
+    return {"id":x.id,"name":x.full_name,"email":x.email,"role":x.role}
 @router.get("/users")
 def users(db:Session=Depends(get_db),u=Depends(require_roles("ADMIN"))):return [{"id":x.id,"name":x.full_name,"email":x.email,"role":x.role,"active":x.is_active} for x in db.scalars(select(User).order_by(User.id.desc())).all()]
 @router.post("/subjects")
 def create_subject(p:SubjectCreate,db:Session=Depends(get_db),u=Depends(require_roles("ADMIN"))):
-    x=Subject(**p.model_dump());db.add(x);db.flush();audit(db,u,"CREATE_SUBJECT","SUBJECT",x.id);db.commit();return {"id":x.id,"code":x.code,"name":x.name}
+    code, name = p.code.strip(), p.name.strip()
+    if not code or not name:
+        raise HTTPException(400,"Subject code and name are required")
+    if not db.get(Semester,p.semester_id):
+        raise HTTPException(404,"Semester not found")
+    duplicate = db.scalar(select(Subject.id).where(
+        Subject.semester_id == p.semester_id,
+        func.upper(func.trim(Subject.code)) == code.upper(),
+    ))
+    if duplicate is not None:
+        raise HTTPException(409,"Subject code already exists for this semester")
+    x=Subject(**{**p.model_dump(),"code":code,"name":name})
+    try:
+        db.add(x)
+        db.flush()
+        audit(db,u,"CREATE_SUBJECT","SUBJECT",x.id)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409,"Subject code already exists for this semester")
+    return {"id":x.id,"code":x.code,"name":x.name}
 @router.get("/subjects")
 def subjects(db:Session=Depends(get_db),u=Depends(current_user)):
     q=select(Subject).where(Subject.status=="ACTIVE")
@@ -101,18 +163,75 @@ def subjects(db:Session=Depends(get_db),u=Depends(current_user)):
 def assignment(p:AssignmentCreate,db:Session=Depends(get_db),u=Depends(require_roles("ADMIN"))):
     teacher=db.get(User,p.teacher_id)
     if not teacher or teacher.role!="TEACHER":raise HTTPException(400,"teacher_id must belong to a teacher")
-    if not db.get(Subject,p.subject_id):raise HTTPException(404,"Subject not found")
-    x=TeacherSubject(**p.model_dump());db.add(x);db.flush();audit(db,u,"ASSIGN_TEACHER","TEACHER_SUBJECT",x.id);db.commit();return {"id":x.id}
+    subject=db.get(Subject,p.subject_id)
+    if not subject:raise HTTPException(404,"Subject not found")
+    if p.section_id is not None:
+        section=db.get(Section,p.section_id)
+        if not section or section.semester_id != subject.semester_id:raise HTTPException(400,"section_id must belong to the subject semester")
+    academic_year=p.academic_year.strip()
+    if not academic_year:raise HTTPException(400,"academic_year is required")
+    duplicate_query=select(TeacherSubject.id).where(
+        TeacherSubject.teacher_id==p.teacher_id,
+        TeacherSubject.subject_id==p.subject_id,
+        func.lower(func.trim(TeacherSubject.academic_year))==academic_year.lower(),
+    )
+    duplicate_query=duplicate_query.where(TeacherSubject.section_id.is_(None) if p.section_id is None else TeacherSubject.section_id==p.section_id)
+    if db.scalar(duplicate_query) is not None:raise HTTPException(409,"Teacher is already assigned to this subject, section, and academic year")
+    x=TeacherSubject(**{**p.model_dump(),"academic_year":academic_year})
+    try:
+        db.add(x)
+        db.flush()
+        audit(db,u,"ASSIGN_TEACHER","TEACHER_SUBJECT",x.id)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409,"Teacher is already assigned to this subject, section, and academic year")
+    return {"id":x.id}
 @router.post("/enrollments")
 def enrollment(p:EnrollmentCreate,db:Session=Depends(get_db),u=Depends(require_roles("ADMIN"))):
     student=db.get(User,p.student_id)
     if not student or student.role!="STUDENT":raise HTTPException(400,"student_id must belong to a student")
-    if not db.get(Subject,p.subject_id):raise HTTPException(404,"Subject not found")
-    x=Enrollment(**p.model_dump());db.add(x);db.flush();audit(db,u,"ENROLL_STUDENT","ENROLLMENT",x.id);db.commit();return {"id":x.id}
+    subject=db.get(Subject,p.subject_id)
+    if not subject:raise HTTPException(404,"Subject not found")
+    if p.section_id is not None:
+        section=db.get(Section,p.section_id)
+        if not section or section.semester_id != subject.semester_id:raise HTTPException(400,"section_id must belong to the subject semester")
+    academic_year=p.academic_year.strip()
+    if not academic_year:raise HTTPException(400,"academic_year is required")
+    if db.scalar(select(Enrollment.id).where(
+        Enrollment.student_id==p.student_id,
+        Enrollment.subject_id==p.subject_id,
+        func.lower(func.trim(Enrollment.academic_year))==academic_year.lower(),
+    )) is not None:raise HTTPException(409,"Student is already enrolled in this subject for this academic year")
+    x=Enrollment(**{**p.model_dump(),"academic_year":academic_year})
+    try:
+        db.add(x)
+        db.flush()
+        audit(db,u,"ENROLL_STUDENT","ENROLLMENT",x.id)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409,"Student is already enrolled in this subject for this academic year")
+    return {"id":x.id}
 @router.post("/topics")
 def create_topic(p:TopicCreate,db:Session=Depends(get_db),u=Depends(require_roles("ADMIN","TEACHER"))):
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
-    x=Topic(**p.model_dump());db.add(x);db.flush();audit(db,u,"CREATE_TOPIC","TOPIC",x.id);db.commit();return {"id":x.id,"topic_name":x.topic_name}
+    topic_name=p.topic_name.strip()
+    if not topic_name:raise HTTPException(400,"Topic name is required")
+    normalized_name=re.sub(r"[^a-z0-9]+"," ",topic_name.lower()).strip()
+    existing_names=db.scalars(select(Topic.topic_name).where(Topic.subject_id==p.subject_id)).all()
+    if any(re.sub(r"[^a-z0-9]+"," ",name.lower()).strip()==normalized_name for name in existing_names):
+        raise HTTPException(409,"Topic name already exists for this subject")
+    x=Topic(**{**p.model_dump(),"topic_name":topic_name})
+    try:
+        db.add(x)
+        db.flush()
+        audit(db,u,"CREATE_TOPIC","TOPIC",x.id)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409,"Topic name already exists for this subject")
+    return {"id":x.id,"topic_name":x.topic_name}
 @router.get("/subjects/{subject_id}/topics")
 def get_topics(subject_id:int,db:Session=Depends(get_db),u=Depends(current_user)):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
@@ -121,8 +240,30 @@ def get_topics(subject_id:int,db:Session=Depends(get_db),u=Depends(current_user)
 def update_topic(topic_id:int,p:TopicUpdate,db:Session=Depends(get_db),u=Depends(require_roles("ADMIN","TEACHER"))):
     x=db.get(Topic,topic_id)
     if not x or not can_access_subject(db,u,x.subject_id):raise HTTPException(404,"Topic not found")
-    for k,v in p.model_dump(exclude_none=True).items():setattr(x,k,v)
-    audit(db,u,"UPDATE_TOPIC","TOPIC",x.id,json.dumps(p.model_dump(exclude_none=True)));db.commit();return {"id":x.id,"updated":True}
+    updates=p.model_dump(exclude_none=True)
+    if updates.get("completed") is True:
+        # Keep topic completion and its plan rows consistent regardless of
+        # whether completion is triggered through the topic or plan endpoint.
+        for item in db.scalars(select(TeachingPlan).where(
+            TeachingPlan.subject_id==x.subject_id,
+            TeachingPlan.topic_id==x.id,
+        )).all():
+            item.status="COMPLETED"
+            item.actual_hours=item.planned_hours
+    elif updates.get("completed") is False:
+        completed_plan_id=db.scalar(select(TeachingPlan.id).where(
+            TeachingPlan.subject_id==x.subject_id,
+            TeachingPlan.topic_id==x.id,
+            TeachingPlan.status=="COMPLETED",
+        ))
+        if completed_plan_id is not None:
+            raise HTTPException(409,"Completed topics cannot be reopened; completed plan history is preserved")
+    for k,v in updates.items():setattr(x,k,v)
+    if {"sequence_order", "estimated_hours", "completed", "status"}.intersection(updates):
+        # Topic edits that affect scheduling must update the plan in the same
+        # transaction, while retaining completed rows as historical records.
+        rebuild_teaching_plan(db,x.subject_id)
+    audit(db,u,"UPDATE_TOPIC","TOPIC",x.id,json.dumps(updates));db.commit();return {"id":x.id,"updated":True}
 @router.post("/resources")
 async def upload_resource(subject_id:int,title:str|None=None,resource_type:str="REFERENCE",file:UploadFile=File(...),db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
@@ -131,8 +272,10 @@ async def upload_resource(subject_id:int,title:str|None=None,resource_type:str="
     ext=file.filename.lower().rsplit(".",1)[-1] if "." in file.filename else ""
     if ext not in allowed:raise HTTPException(415,"Unsupported file type")
     if len(data)>20*1024*1024:raise HTTPException(413,"Maximum file size is 20 MB")
-    key=f"subjects/{subject_id}/resources/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{u.id}_{file.filename.replace(' ','_')}"
+    safe_filename=re.sub(r"[^a-zA-Z0-9._-]", "_", file.filename)
+    key=f"subjects/{subject_id}/resources/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex}_{u.id}_{safe_filename}"
     text,pages=extract_text(file.filename,data);text=normalize_text(text);chunks,pages=extract_chunks(file.filename,data);stored=put_object(key,data,file.content_type or "application/octet-stream")
+    if not stored:raise HTTPException(503,"Object storage is unavailable; resource was not saved")
     x=Resource(subject_id=subject_id,uploaded_by=u.id,title=title or file.filename,resource_type=resource_type,storage_key=key,status="DRAFT",extracted_text=text,page_count=pages);db.add(x);db.flush()
     for i,ch in enumerate(chunks):db.add(ResourceChunk(resource_id=x.id,subject_id=subject_id,chunk_index=i,text=ch['text'],page_number=ch.get('page'),section=ch.get('section'),qdrant_point_id=str(int(__import__('hashlib').sha1(f'{x.id}:{i}'.encode()).hexdigest()[:15],16))))
     vectorized=upsert_chunks(x.id,subject_id,chunks,x.title)
@@ -157,10 +300,29 @@ def resource_status(resource_id:int,status:str=Query(...),db:Session=Depends(get
     x=db.get(Resource,resource_id)
     if not x or not can_access_subject(db,u,x.subject_id):raise HTTPException(404,"Resource not found")
     if status not in {"DRAFT","APPROVED","ARCHIVED"}:raise HTTPException(400,"Invalid resource status")
-    x.status=status
+    if x.status == "ARCHIVED" and status != "ARCHIVED":
+        raise HTTPException(409,"Archived resources cannot be reactivated; upload a new version")
+    if x.status == "APPROVED" and status == "DRAFT":
+        raise HTTPException(409,"Approved resources cannot be returned to draft")
+    if x.status == status:
+        return {"id":x.id,"status":x.status}
+
     from app.services.qdrant import set_resource_status
+    if status == "APPROVED":
+        previous_versions=db.scalars(select(Resource).where(
+            Resource.subject_id == x.subject_id,
+            Resource.title == x.title,
+            Resource.id != x.id,
+            Resource.status == "APPROVED",
+        )).all()
+        for previous in previous_versions:
+            previous.status="ARCHIVED"
+            set_resource_status(previous.id,"ARCHIVED")
+            audit(db,u,"RESOURCE_ARCHIVED","RESOURCE",previous.id,
+                  json.dumps({"replaced_by_resource_id":x.id}))
+    x.status=status
     set_resource_status(x.id,status)
-    audit(db,u,f"RESOURCE_{status}","RESOURCE",x.id);db.commit();return {"id":x.id,"status":status}
+    audit(db,u,f"RESOURCE_{status}","RESOURCE",x.id);db.commit();return {"id":x.id,"status":x.status}
 @router.get("/resources/{resource_id}/download")
 def download_resource(resource_id:int,db:Session=Depends(get_db),u=Depends(current_user)):
     from fastapi.responses import Response
@@ -173,6 +335,10 @@ def download_resource(resource_id:int,db:Session=Depends(get_db),u=Depends(curre
 @router.post("/syllabus/versions")
 def syllabus_version(subject_id:int,resource_id:int|None=None,summary:str|None=None,db:Session=Depends(get_db),u=Depends(require_roles("ADMIN","TEACHER"))):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
+    if resource_id is not None:
+        resource=db.get(Resource,resource_id)
+        if not resource or resource.subject_id != subject_id:
+            raise HTTPException(400,"resource_id must belong to the requested subject")
     current=db.scalar(select(func.max(SyllabusVersion.version)).where(SyllabusVersion.subject_id==subject_id)) or 0
     v=SyllabusVersion(subject_id=subject_id,version=current+1,source_resource_id=resource_id,summary=summary);db.add(v);db.flush();audit(db,u,"CREATE_SYLLABUS_VERSION","SYLLABUS",v.id);db.commit();return {"id":v.id,"version":v.version}
 @router.get("/syllabus/{subject_id}/versions")
@@ -182,16 +348,19 @@ def syllabus_versions(subject_id:int,db:Session=Depends(get_db),u=Depends(curren
 @router.post("/content")
 def create_content(p:ContentCreate,db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
+    if p.topic_id is not None:
+        topic=db.get(Topic,p.topic_id)
+        if not topic or topic.subject_id != p.subject_id or topic.status != "ACTIVE":
+            raise HTTPException(400,"topic_id must belong to the requested subject and be active")
     x=Content(**p.model_dump(),status="IN_REVIEW",created_by=u.id);db.add(x);db.flush();audit(db,u,"CREATE_CONTENT","CONTENT",x.id);db.commit();return {"id":x.id,"status":x.status}
 @router.post("/ai/ask")
 def ask_ai(p:AskRequest,db:Session=Depends(get_db),u=Depends(current_user)):
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
     hits=search_chunks(p.subject_id,p.question,top_k=8)
-    if hits:
-        contexts=[{"status":"APPROVED","source":h.get("source","resource"),"text":h.get("text",""),"citation":f"page {h['page']}, {h['section']}" if h.get("page") and h.get("section") else h.get("section") or ("page "+str(h["page"]) if h.get("page") else "resource chunk")} for h in hits]
-    else:
+    contexts=approved_contexts_from_hits(db,p.subject_id,hits)
+    if not contexts:
         rs=db.scalars(select(Resource).where(Resource.subject_id==p.subject_id,Resource.status=="APPROVED")).all()
-        contexts=[{"status":"APPROVED","source":r.title,"text":r.extracted_text or ""} for r in rs]
+        contexts=[{"status":"APPROVED","source":r.title,"text":r.extracted_text or "","citation":r.title} for r in rs if r.extracted_text]
     result=grounded_answer(p.question,contexts);audit(db,u,"AI_ASK","SUBJECT",p.subject_id,p.question[:500]);db.commit();return result
 @router.post("/ai/prompt-preview")
 def ai_prompt_preview(question:str,subject_id:int,db:Session=Depends(get_db),u=Depends(current_user)):
@@ -204,20 +373,33 @@ def generate_content(p:AIContentRequest,db:Session=Depends(get_db),u=Depends(req
     rs=db.scalars(select(Resource).where(Resource.subject_id==p.subject_id,Resource.status=="APPROVED")).all()
     if not rs:raise HTTPException(400,"Approve at least one academic resource before AI generation")
     topic=db.get(Topic,p.topic_id) if p.topic_id else None
+    if p.topic_id is not None and (not topic or topic.subject_id != p.subject_id or topic.status != "ACTIVE"):
+        raise HTTPException(400,"topic_id must belong to the requested subject and be active")
     query=f"Create {p.content_type} titled '{p.title or p.content_type}' for topic '{topic.topic_name if topic else 'the subject'}'. {p.instructions or ''}"
     hits=search_chunks(p.subject_id,query,top_k=12)
-    contexts=[{"status":"APPROVED","source":h.get("source","resource"),"text":h.get("text",""),"citation":f"page {h['page']}, {h['section']}" if h.get("page") and h.get("section") else h.get("section") or ("page "+str(h["page"]) if h.get("page") else "resource chunk")} for h in hits]
+    contexts=approved_contexts_from_hits(db,p.subject_id,hits)
     if not contexts:
-        contexts=[{"status":"APPROVED","source":r.title,"text":r.extracted_text or ""} for r in rs]
-    prompt=build_rag_prompt(query,contexts)
-    body=gemini_generate(prompt) or ("AI generation requires GEMINI_API_KEY. Approved-resource context is ready for generation.\n\n"+(rs[0].extracted_text or "")[:2500])
-    x=Content(subject_id=p.subject_id,topic_id=p.topic_id,title=p.title or f"AI {p.content_type}",content_type=p.content_type,body=body,status="IN_REVIEW",source_reference=", ".join(sorted({x.get("source","resource") for x in contexts})),generated_by_ai=True);db.add(x);db.flush();audit(db,u,"AI_GENERATE_CONTENT","CONTENT",x.id,p.content_type);db.commit();return {"id":x.id,"status":x.status,"body":x.body,"sources":[r.title for r in rs]}
+        contexts=[{"status":"APPROVED","source":r.title,"text":r.extracted_text or "","citation":r.title} for r in rs if r.extracted_text]
+    if not contexts:
+        raise HTTPException(409,"Approved resources contain no extractable text for generation")
+    body=gemini_generate(build_rag_prompt(query,contexts))
+    if not body:
+        raise HTTPException(502,"AI generation failed or GEMINI_API_KEY is not configured")
+    x=Content(subject_id=p.subject_id,topic_id=p.topic_id,title=p.title or f"AI {p.content_type}",content_type=p.content_type,body=body,status="IN_REVIEW",source_reference=", ".join(sorted({x.get("source","resource") for x in contexts})),generated_by_ai=True);db.add(x);db.flush();audit(db,u,"AI_GENERATE_CONTENT","CONTENT",x.id,p.content_type);db.commit();return {"id":x.id,"status":x.status,"body":x.body,"sources":[x.get("source","resource") for x in contexts]}
 @router.post("/pyq/questions")
 def add_pyq(p:PYQCreate,db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
+    if not p.question_text.strip():raise HTTPException(400,"Question text is required")
+    selected_topic=db.get(Topic,p.topic_id) if p.topic_id is not None else None
+    if p.topic_id is not None and (not selected_topic or selected_topic.subject_id != p.subject_id or selected_topic.status != "ACTIVE"):
+        raise HTTPException(400,"topic_id must belong to the requested subject and be active")
     ts=db.scalars(select(Topic).where(Topic.subject_id==p.subject_id,Topic.status=="ACTIVE")).all()
     q=PYQQuestion(**p.model_dump(),frequency_key=re.sub(r'[^a-z0-9 ]','',p.question_text.lower())[:255])
-    if ts:
+    if selected_topic:
+        q.topic_id=selected_topic.id
+        q.unit_number=selected_topic.unit_number
+        q.mapping_confidence=1.0
+    elif ts:
         words=set(re.findall(r'[a-z0-9]{3,}',q.question_text.lower()))
         best,best_score=None,0
         for t in ts:
@@ -232,17 +414,42 @@ def add_pyq(p:PYQCreate,db:Session=Depends(get_db),u=Depends(require_roles("TEAC
 @router.post("/pyq/reanalyze/{subject_id}")
 def reanalyze_pyq(subject_id:int,db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
-    qs=db.scalars(select(PYQQuestion).where(PYQQuestion.subject_id==subject_id)).all();ts=db.scalars(select(Topic).where(Topic.subject_id==subject_id,Topic.status=="ACTIVE")).all()
+    qs=db.scalars(select(PYQQuestion).where(PYQQuestion.subject_id==subject_id)).all()
+    ts=db.scalars(select(Topic).where(Topic.subject_id==subject_id,Topic.status=="ACTIVE")).all()
     if not ts:raise HTTPException(400,"Create syllabus topics first")
+    active_topic_ids={topic.id for topic in ts}
     for q in qs:
-        if not q.topic_id:
-            words=set(re.findall(r'[a-z0-9]{3,}',q.question_text.lower()));best=max(ts,key=lambda t:len(words&set(re.findall(r'[a-z0-9]{3,}',t.topic_name.lower()))),default=None)
-            if best:q.topic_id=best.id;q.unit_number=best.unit_number
-    for old in db.scalars(select(TopicWeightage).where(TopicWeightage.subject_id==subject_id)).all():db.delete(old)
-    total=sum(q.marks for q in qs) or 1
-    for t in ts:
-        rows=[q for q in qs if q.topic_id==t.id];marks=sum(q.marks for q in rows);db.add(TopicWeightage(subject_id=subject_id,topic_id=t.id,question_count=len(rows),total_marks=marks,percentage=round(marks*100/total,2)))
-    audit(db,u,"REANALYZE_PYQ","SUBJECT",subject_id,f"questions={len(qs)}");db.commit();return pyq_analysis(subject_id,db,u)
+        # Preserve an explicit selection only while its topic remains active.
+        if q.mapping_confidence==1.0 and q.topic_id in active_topic_ids:
+            q.frequency_key=re.sub(r"[^a-z0-9]+"," ",(q.question_text or "").lower()).strip()[:255]
+            continue
+        words=set(re.findall(r"[a-z0-9]{3,}",(q.question_text or "").lower()))
+        best,best_score=None,0
+        for topic in ts:
+            topic_words=set(re.findall(r"[a-z0-9]{3,}",topic.topic_name.lower()))
+            score=len(words & topic_words)
+            if score>best_score:
+                best,best_score=topic,score
+        if best:
+            q.topic_id=best.id
+            q.unit_number=best.unit_number
+            q.mapping_confidence=round(best_score/max(len(words),1),3)
+        else:
+            q.topic_id=None
+            q.unit_number=None
+            q.mapping_confidence=0.0
+        q.frequency_key=re.sub(r"[^a-z0-9]+"," ",(q.question_text or "").lower()).strip()[:255]
+    for old in db.scalars(select(TopicWeightage).where(TopicWeightage.subject_id==subject_id)).all():
+        db.delete(old)
+    total=sum(float(q.marks or 0) for q in qs) or 1.0
+    for topic in ts:
+        rows=[q for q in qs if q.topic_id==topic.id]
+        marks=sum(float(q.marks or 0) for q in rows)
+        db.add(TopicWeightage(subject_id=subject_id,topic_id=topic.id,question_count=len(rows),
+                              total_marks=marks,percentage=round(marks*100/total,2)))
+    audit(db,u,"REANALYZE_PYQ","SUBJECT",subject_id,f"questions={len(qs)}")
+    db.commit()
+    return pyq_analysis(subject_id,db,u)
 @router.get("/pyq/analysis/{subject_id}")
 def pyq_analysis(subject_id:int,db:Session=Depends(get_db),u=Depends(current_user)):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
@@ -250,20 +457,25 @@ def pyq_analysis(subject_id:int,db:Session=Depends(get_db),u=Depends(current_use
     for q in qs:rep[q.frequency_key or q.question_text.lower()]=rep.get(q.frequency_key or q.question_text.lower(),0)+1
     return {"questions":len(qs),"weights":[{"topic_id":w.topic_id,"topic":t.topic_name,"unit":t.unit_number,"question_count":w.question_count,"marks":w.total_marks,"percentage":w.percentage} for w,t in rows],"repeated":[{"question":k,"frequency":v} for k,v in sorted(rep.items(),key=lambda z:z[1],reverse=True) if v>1]}
 @router.post("/teaching-plan/generate")
-def generate_plan(p:AIPlanRequest,db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
-    if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
-    subject=db.get(Subject,p.subject_id);topics=db.scalars(select(Topic).where(Topic.subject_id==p.subject_id,Topic.status=="ACTIVE").order_by(Topic.sequence_order)).all()
-    if not topics:raise HTTPException(400,"Create syllabus topics first")
-    for old in db.scalars(select(TeachingPlan).where(TeachingPlan.subject_id==p.subject_id,TeachingPlan.status!="COMPLETED")).all():db.delete(old)
-    week=1;used=0
-    for t in topics:
-        rem=t.estimated_hours
-        while rem>0 and week<=subject.weeks:
-            cap=max(subject.hours_per_week-used,0)
-            if cap<=0:week+=1;used=0;continue
-            h=min(rem,cap);db.add(TeachingPlan(subject_id=p.subject_id,topic_id=t.id,planned_week=week,planned_hours=h));rem-=h;used+=h
-            if used>=subject.hours_per_week:week+=1;used=0
-    audit(db,u,"GENERATE_TEACHING_PLAN","SUBJECT",p.subject_id);db.commit();return get_plan_data(db,p.subject_id)
+def generate_plan(p: AIPlanRequest, db: Session = Depends(get_db), u=Depends(require_roles("TEACHER", "ADMIN"))):
+    if not can_access_subject(db, u, p.subject_id):
+        raise HTTPException(403, "Subject access denied")
+    topics = db.scalars(
+        select(Topic).where(
+            Topic.subject_id == p.subject_id,
+            Topic.status == "ACTIVE",
+        ).order_by(Topic.sequence_order)
+    ).all()
+    if not topics:
+        raise HTTPException(400, "Create syllabus topics first")
+
+    # Reuse the completion-aware scheduler so regenerating a plan never
+    # reintroduces completed topics or overlaps their reserved teaching hours.
+    result = rebuild_teaching_plan(db, p.subject_id)
+    audit(db, u, "GENERATE_TEACHING_PLAN", "SUBJECT", p.subject_id)
+    db.commit()
+    return result
+
 def get_plan_data(db,subject_id):
     rows=db.execute(select(TeachingPlan,Topic).join(Topic,Topic.id==TeachingPlan.topic_id).where(TeachingPlan.subject_id==subject_id).order_by(TeachingPlan.planned_week,Topic.sequence_order)).all()
     return [{"id":p.id,"topic_id":p.topic_id,"topic":t.topic_name,"week":p.planned_week,"planned_hours":p.planned_hours,"actual_hours":p.actual_hours,"status":p.status,"note":p.teacher_note} for p,t in rows]
@@ -326,8 +538,18 @@ def update_plan(subject_id:int,p:PlanAction,db:Session=Depends(get_db),u=Depends
     if not topic or topic.subject_id!=subject_id:raise HTTPException(404,"Topic not found")
 
     if p.action=="complete":
-        plan.status="COMPLETED"
-        plan.actual_hours=p.value or plan.planned_hours
+        topic_plan_rows=db.scalars(select(TeachingPlan).where(
+            TeachingPlan.subject_id==subject_id,
+            TeachingPlan.topic_id==topic.id,
+        ).order_by(TeachingPlan.planned_week,TeachingPlan.id)).all()
+        for item in topic_plan_rows:
+            if item.status!="COMPLETED":
+                item.status="COMPLETED"
+                item.actual_hours=item.planned_hours
+        if p.value is not None:
+            # Apply the legacy actual-hours override to the first unfinished row,
+            # without overwriting hours already recorded on completed rows.
+            plan.actual_hours=p.value
         topic.completed=True
     elif p.action=="duration":
         new_hours=float(p.value or topic.estimated_hours)
@@ -369,10 +591,17 @@ def add_quiz_question(quiz_id:int,p:QuizQuestionCreate,db:Session=Depends(get_db
     if qz.status != "DRAFT":raise HTTPException(409,"Only DRAFT quizzes can be edited")
     if not p.question_text.strip() or not p.correct_answer.strip():raise HTTPException(400,"Question and correct_answer are required")
     if p.marks <= 0:raise HTTPException(400,"Question marks must be positive")
+    options=[option.strip() for option in (p.options or [])]
+    normalized_options=[option.casefold() for option in options]
+    if len(options) != 4 or any(not option for option in options) or len(set(normalized_options)) != 4:
+        raise HTTPException(400,"Quiz questions must have four distinct, non-empty options")
+    correct_answer=next((option for option in options if option.casefold()==p.correct_answer.strip().casefold()),None)
+    if correct_answer is None:
+        raise HTTPException(400,"correct_answer must match one of the options")
     if p.topic_id is not None:
         topic=db.get(Topic,p.topic_id)
-        if not topic or topic.subject_id != qz.subject_id:raise HTTPException(400,"topic_id must belong to the quiz subject")
-    q=QuizQuestion(quiz_id=quiz_id,topic_id=p.topic_id,question_text=p.question_text.strip(),marks=p.marks,correct_answer=p.correct_answer.strip(),options_json=json.dumps(p.options or []));db.add(q);db.flush();audit(db,u,"ADD_QUIZ_QUESTION","QUIZ_QUESTION",q.id);db.commit();return {"id":q.id}
+        if not topic or topic.subject_id != qz.subject_id or topic.status != "ACTIVE":raise HTTPException(400,"topic_id must belong to the quiz subject and be active")
+    q=QuizQuestion(quiz_id=quiz_id,topic_id=p.topic_id,question_text=p.question_text.strip(),marks=p.marks,correct_answer=correct_answer,options_json=json.dumps(options));db.add(q);db.flush();audit(db,u,"ADD_QUIZ_QUESTION","QUIZ_QUESTION",q.id);db.commit();return {"id":q.id}
 @router.patch("/quizzes/{quiz_id}/status")
 def quiz_status(quiz_id:int,status:str=Query(...),db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     q=db.get(Quiz,quiz_id)

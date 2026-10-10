@@ -138,6 +138,32 @@ def test_quiz_lifecycle_and_student_publication_gate(client):
     )
     assert empty_publish.status_code == 400
 
+    invalid_options = test_client.post(
+        f"/api/quizzes/{quiz_id}/questions",
+        headers=admin_headers,
+        json={
+            "question_text": "Invalid question with duplicate options?",
+            "marks": 1,
+            "correct_answer": "A",
+            "options": ["A", "A", "B", "C"],
+            "topic_id": 1,
+        },
+    )
+    assert invalid_options.status_code == 400
+
+    invalid_answer = test_client.post(
+        f"/api/quizzes/{quiz_id}/questions",
+        headers=admin_headers,
+        json={
+            "question_text": "Correct answer is not an option?",
+            "marks": 1,
+            "correct_answer": "Z",
+            "options": ["A", "B", "C", "D"],
+            "topic_id": 1,
+        },
+    )
+    assert invalid_answer.status_code == 400
+
     question = test_client.post(
         f"/api/quizzes/{quiz_id}/questions",
         headers=admin_headers,
@@ -157,6 +183,16 @@ def test_quiz_lifecycle_and_student_publication_gate(client):
         headers=admin_headers,
     )
     assert published.status_code == 200, published.text
+
+    # Published assessments are immutable: generation must not replace their questions.
+    regenerate_published = test_client.post(
+        f"/api/quizzes/{quiz_id}/generate",
+        headers=admin_headers,
+    )
+    assert regenerate_published.status_code == 409
+    unchanged = test_client.get(f"/api/quizzes/{quiz_id}", headers=admin_headers)
+    assert unchanged.status_code == 200, unchanged.text
+    assert [item["id"] for item in unchanged.json()["questions"]] == [question_id]
 
     student_list = test_client.get(
         f"/api/quizzes?subject_id={subject_id}",
@@ -297,3 +333,95 @@ def test_quiz_lifecycle_and_student_publication_gate(client):
         headers=admin_headers,
     )
     assert invalid_republish.status_code == 409
+
+
+def test_invalid_ai_questions_do_not_delete_existing_draft_questions(client, monkeypatch):
+    from app.api import extended_routes
+
+    test_client, subject_id = client
+    admin_headers = login(test_client, "quiz-admin@example.com", "Admin@123")
+    created = test_client.post(
+        "/api/quizzes",
+        headers=admin_headers,
+        json={"subject_id": subject_id, "title": "Draft Quiz", "duration_minutes": 20},
+    )
+    assert created.status_code == 200, created.text
+    quiz_id = created.json()["id"]
+    question = test_client.post(
+        f"/api/quizzes/{quiz_id}/questions",
+        headers=admin_headers,
+        json={
+            "question_text": "Existing question?",
+            "marks": 1,
+            "correct_answer": "Yes",
+            "options": ["Yes", "No", "Maybe", "Unknown"],
+            "topic_id": 1,
+        },
+    )
+    assert question.status_code == 200, question.text
+    question_id = question.json()["id"]
+
+    monkeypatch.setattr(
+        extended_routes,
+        "approved_contexts",
+        lambda *args, **kwargs: [{"status": "APPROVED", "source": "Notes", "text": "Grounded context."}],
+    )
+    monkeypatch.setattr(
+        extended_routes,
+        "generate_structured",
+        lambda *args, **kwargs: {"questions": [{"question": "Invalid question?", "answer": "A", "options": ["A", "B"]}]},
+    )
+
+    generated = test_client.post(
+        f"/api/quizzes/{quiz_id}/generate",
+        headers=admin_headers,
+    )
+    assert generated.status_code == 502
+
+    detail = test_client.get(f"/api/quizzes/{quiz_id}", headers=admin_headers)
+    assert detail.status_code == 200, detail.text
+    assert [item["id"] for item in detail.json()["questions"]] == [question_id]
+
+
+def test_malformed_ai_quiz_payload_returns_gateway_error_without_deleting_questions(client, monkeypatch):
+    from app.api import extended_routes
+
+    test_client, subject_id = client
+    headers = login(test_client, "quiz-admin@example.com", "Admin@123")
+    created = test_client.post(
+        "/api/quizzes",
+        headers=headers,
+        json={"subject_id": subject_id, "title": "Malformed AI Draft", "duration_minutes": 20},
+    )
+    assert created.status_code == 200, created.text
+    quiz_id = created.json()["id"]
+    question = test_client.post(
+        f"/api/quizzes/{quiz_id}/questions",
+        headers=headers,
+        json={
+            "question_text": "Keep this question?",
+            "marks": 1,
+            "correct_answer": "A",
+            "options": ["A", "B", "C", "D"],
+            "topic_id": 1,
+        },
+    )
+    assert question.status_code == 200, question.text
+    question_id = question.json()["id"]
+
+    monkeypatch.setattr(
+        extended_routes,
+        "approved_contexts",
+        lambda *args, **kwargs: [{"status": "APPROVED", "source": "Notes", "text": "Grounded context."}],
+    )
+    monkeypatch.setattr(
+        extended_routes,
+        "generate_structured",
+        lambda *args, **kwargs: ["malformed", "non-object", "AI output"],
+    )
+
+    generated = test_client.post(f"/api/quizzes/{quiz_id}/generate", headers=headers)
+    assert generated.status_code == 502, generated.text
+    detail = test_client.get(f"/api/quizzes/{quiz_id}", headers=headers)
+    assert detail.status_code == 200, detail.text
+    assert [item["id"] for item in detail.json()["questions"]] == [question_id]

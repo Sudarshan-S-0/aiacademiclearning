@@ -1,10 +1,12 @@
 from datetime import datetime, timezone
+import math
 from collections import Counter, defaultdict
-import json, re
+import json, re, uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from app.db.session import get_db
 from app.models.models import *
@@ -34,15 +36,15 @@ class PlanEdit(BaseModel):
 
 
 class PYQQuestionInput(BaseModel):
-    year: int | None = None
-    question_no: str | None = None
-    question_text: str
-    marks: float = 1.0
+    year: int | None = Field(default=None, ge=1900, le=2100)
+    question_no: str | None = Field(default=None, max_length=30)
+    question_text: str = Field(min_length=1)
+    marks: float = Field(default=1.0, gt=0, allow_inf_nan=False)
 
 
 class PYQBulkRequest(BaseModel):
-    subject_id: int
-    resource_id: int | None = None
+    subject_id: int = Field(ge=1)
+    resource_id: int | None = Field(default=None, ge=1)
     questions: list[PYQQuestionInput]
 
 
@@ -75,20 +77,20 @@ class ContentStatusUpdate(BaseModel):
 
 
 class DepartmentCreate(BaseModel):
-    code: str
-    name: str
+    code: str = Field(min_length=1, max_length=20)
+    name: str = Field(min_length=1, max_length=150)
 
 
 class SemesterCreate(BaseModel):
-    department_id: int
-    academic_year: str
-    semester_number: int
-    regulation: str | None = None
+    department_id: int = Field(ge=1)
+    academic_year: str = Field(min_length=1, max_length=20)
+    semester_number: int = Field(ge=1, le=20)
+    regulation: str | None = Field(default=None, max_length=40)
 
 
 class SectionCreate(BaseModel):
-    semester_id: int
-    name: str
+    semester_id: int = Field(ge=1)
+    name: str = Field(min_length=1, max_length=30)
 
 
 def normalize_key(value: str) -> str:
@@ -113,7 +115,7 @@ def approved_contexts(db: Session, subject_id: int, query: str, top_k: int = 8):
             continue
         rid = p.get("resource_id")
         r = db.get(Resource, rid) if rid else None
-        if not r or r.status != "APPROVED":
+        if not r or r.subject_id != subject_id or r.status != "APPROVED":
             continue
         key = (rid, p.get("page"), p.get("section"), p.get("text", "")[:80])
         if key in seen:
@@ -131,7 +133,7 @@ def approved_contexts(db: Session, subject_id: int, query: str, top_k: int = 8):
     rows = db.execute(
         select(ResourceChunk, Resource)
         .join(Resource, Resource.id == ResourceChunk.resource_id)
-        .where(ResourceChunk.subject_id == subject_id, Resource.status == "APPROVED")
+        .where(ResourceChunk.subject_id == subject_id, Resource.subject_id == subject_id, Resource.status == "APPROVED")
         .order_by(ResourceChunk.id.desc())
         .limit(top_k)
     ).all()
@@ -177,11 +179,22 @@ def rebuild_plan(db: Session, subject_id: int):
         select(Topic).where(Topic.subject_id == subject_id, Topic.status == "ACTIVE")
         .order_by(Topic.sequence_order, Topic.id)
     ).all()
-    completed = {
-        x.topic_id: x for x in db.scalars(
-            select(TeachingPlan).where(TeachingPlan.subject_id == subject_id, TeachingPlan.status == "COMPLETED")
-        ).all()
-    }
+
+    # Completed plan rows are historical records: preserve them and reserve
+    # their hours so rebuilding cannot schedule unfinished topics on top of
+    # already-completed teaching time.
+    completed_rows = db.scalars(
+        select(TeachingPlan).where(
+            TeachingPlan.subject_id == subject_id,
+            TeachingPlan.status == "COMPLETED",
+        )
+    ).all()
+    completed_topic_ids = {row.topic_id for row in completed_rows}
+    occupied = {week: 0.0 for week in range(1, subject.weeks + 1)}
+    for row in completed_rows:
+        if 1 <= row.planned_week <= subject.weeks:
+            occupied[row.planned_week] = occupied.get(row.planned_week, 0.0) + float(row.planned_hours or 0)
+
     for old in db.scalars(
         select(TeachingPlan).where(
             TeachingPlan.subject_id == subject_id, TeachingPlan.status != "COMPLETED"
@@ -189,30 +202,25 @@ def rebuild_plan(db: Session, subject_id: int):
     ).all():
         db.delete(old)
     db.flush()
-    week, used = 1, 0.0
+
     for topic in active_topics:
-        if topic.id in completed:
+        if topic.id in completed_topic_ids or topic.completed:
             continue
-        remaining = max(float(topic.estimated_hours), 0.0)
-        while remaining > 0 and week <= subject.weeks:
-            capacity = max(float(subject.hours_per_week) - used, 0.0)
+        remaining = max(float(topic.estimated_hours or 0), 0.0)
+        for week in range(1, subject.weeks + 1):
+            if remaining <= 0:
+                break
+            capacity = max(float(subject.hours_per_week) - occupied.get(week, 0.0), 0.0)
             if capacity <= 0:
-                week += 1
-                used = 0.0
                 continue
             hours = min(remaining, capacity)
             db.add(TeachingPlan(
                 subject_id=subject_id, topic_id=topic.id, planned_week=week,
                 planned_hours=hours, status="PLANNED"
             ))
+            occupied[week] = occupied.get(week, 0.0) + hours
             remaining -= hours
-            used += hours
-            if used >= subject.hours_per_week:
-                week += 1
-                used = 0.0
     return plan_rows(db, subject_id)
-
-
 def pyq_reanalyze(db: Session, subject_id: int):
     qs = db.scalars(select(PYQQuestion).where(PYQQuestion.subject_id == subject_id)).all()
     topics = db.scalars(
@@ -220,7 +228,15 @@ def pyq_reanalyze(db: Session, subject_id: int):
     ).all()
     if not topics:
         raise HTTPException(400, "Create syllabus topics first")
+    active_topic_ids = {topic.id for topic in topics}
     for q in qs:
+        # A manually selected mapping is recorded with confidence 1.0. Keep it
+        # while its topic remains active in this subject; automatic mappings can
+        # be recalculated as the syllabus changes.
+        if q.mapping_confidence == 1.0 and q.topic_id in active_topic_ids:
+            q.frequency_key = normalize_key(q.question_text)[:255]
+            continue
+
         words = set(re.findall(r"[a-z0-9]{3,}", q.question_text.lower()))
         best, best_score = None, 0
         for topic in topics:
@@ -232,7 +248,13 @@ def pyq_reanalyze(db: Session, subject_id: int):
             q.topic_id = best.id
             q.unit_number = best.unit_number
             q.mapping_confidence = round(best_score / max(len(words), 1), 3)
-            q.frequency_key = normalize_key(q.question_text)[:255]
+        else:
+            # Do not leave a stale mapping to a topic that no longer matches
+            # the active syllabus.
+            q.topic_id = None
+            q.unit_number = None
+            q.mapping_confidence = 0.0
+        q.frequency_key = normalize_key(q.question_text)[:255]
     for old in db.scalars(select(TopicWeightage).where(TopicWeightage.subject_id == subject_id)).all():
         db.delete(old)
     total = sum(float(q.marks or 0) for q in qs) or 1.0
@@ -248,10 +270,22 @@ def pyq_reanalyze(db: Session, subject_id: int):
 
 @router.post("/departments")
 def create_department(p: DepartmentCreate, db: Session = Depends(get_db), u=Depends(require_roles("ADMIN"))):
-    if db.scalar(select(Department).where(Department.code == p.code)):
+    code, name = p.code.strip().upper(), p.name.strip()
+    if not code or not name:
+        raise HTTPException(400, "Department code and name are required")
+    if db.scalar(select(Department.id).where(func.upper(Department.code) == code)) is not None:
         raise HTTPException(409, "Department code already exists")
-    d = Department(code=p.code.strip().upper(), name=p.name.strip())
-    db.add(d); db.flush(); audit(db, u, "CREATE_DEPARTMENT", "DEPARTMENT", d.id); db.commit()
+    if db.scalar(select(Department.id).where(func.lower(Department.name) == name.lower())) is not None:
+        raise HTTPException(409, "Department name already exists")
+    d = Department(code=code, name=name)
+    try:
+        db.add(d)
+        db.flush()
+        audit(db, u, "CREATE_DEPARTMENT", "DEPARTMENT", d.id)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "Department code or name already exists")
     return {"id": d.id, "code": d.code, "name": d.name}
 
 
@@ -263,10 +297,26 @@ def list_departments(db: Session = Depends(get_db), u=Depends(require_roles("ADM
 
 @router.post("/semesters")
 def create_semester(p: SemesterCreate, db: Session = Depends(get_db), u=Depends(require_roles("ADMIN"))):
+    academic_year = p.academic_year.strip()
+    if not academic_year:
+        raise HTTPException(400, "Academic year is required")
     if not db.get(Department, p.department_id):
         raise HTTPException(404, "Department not found")
-    s = Semester(**p.model_dump())
-    db.add(s); db.flush(); audit(db, u, "CREATE_SEMESTER", "SEMESTER", s.id); db.commit()
+    if db.scalar(select(Semester.id).where(
+        Semester.department_id == p.department_id,
+        func.lower(func.trim(Semester.academic_year)) == academic_year.lower(),
+        Semester.semester_number == p.semester_number,
+    )) is not None:
+        raise HTTPException(409, "Semester already exists for this department and academic year")
+    s = Semester(**{**p.model_dump(), "academic_year": academic_year})
+    try:
+        db.add(s)
+        db.flush()
+        audit(db, u, "CREATE_SEMESTER", "SEMESTER", s.id)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "Semester already exists for this department and academic year")
     return {"id": s.id, "department_id": s.department_id, "academic_year": s.academic_year,
             "semester": s.semester_number, "regulation": s.regulation}
 
@@ -280,10 +330,25 @@ def list_semesters(db: Session = Depends(get_db), u=Depends(require_roles("ADMIN
 
 @router.post("/sections")
 def create_section(p: SectionCreate, db: Session = Depends(get_db), u=Depends(require_roles("ADMIN"))):
+    name = p.name.strip()
+    if not name:
+        raise HTTPException(400, "Section name is required")
     if not db.get(Semester, p.semester_id):
         raise HTTPException(404, "Semester not found")
-    s = Section(**p.model_dump())
-    db.add(s); db.flush(); audit(db, u, "CREATE_SECTION", "SECTION", s.id); db.commit()
+    if db.scalar(select(Section.id).where(
+        Section.semester_id == p.semester_id,
+        func.lower(func.trim(Section.name)) == name.lower(),
+    )) is not None:
+        raise HTTPException(409, "Section already exists for this semester")
+    s = Section(semester_id=p.semester_id, name=name)
+    try:
+        db.add(s)
+        db.flush()
+        audit(db, u, "CREATE_SECTION", "SECTION", s.id)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "Section already exists for this semester")
     return {"id": s.id, "semester_id": s.semester_id, "name": s.name}
 
 
@@ -344,10 +409,13 @@ async def upload_resource_v2(subject_id: int, title: str, resource_type: str = "
     version = (latest.version + 1) if latest else 1
     text, pages = extract_text(file.filename, data)
     sections, _ = extract_sections(file.filename, data)
-    key = f"subjects/{subject_id}/resources/{version}-{re.sub(r'[^a-zA-Z0-9._-]', '_', file.filename)}"
+    safe_filename = re.sub(r"[^a-zA-Z0-9._-]", "_", file.filename)
+    key = f"subjects/{subject_id}/resources/{version}-{uuid.uuid4().hex}-{safe_filename}"
     stored = put_object(key, data, file.content_type or "application/octet-stream")
+    if not stored:
+        raise HTTPException(503, "Object storage is unavailable; resource was not saved")
     r = Resource(subject_id=subject_id, uploaded_by=u.id, title=title,
-                 resource_type=resource_type.upper(), storage_key=key if stored else None,
+                 resource_type=resource_type.upper(), storage_key=key,
                  status="DRAFT", version=version, extracted_text=text, page_count=pages,
                  parent_resource_id=latest.id if latest else None)
     db.add(r); db.flush()
@@ -371,6 +439,24 @@ def approve_resource_v2(resource_id: int, db: Session = Depends(get_db), u=Depen
     r = db.get(Resource, resource_id)
     if not r or not can_access_subject(db, u, r.subject_id):
         raise HTTPException(404, "Resource not found")
+    if r.status == "ARCHIVED":
+        raise HTTPException(409, "Archived resources cannot be re-approved; upload a new version")
+    if r.status == "APPROVED":
+        return {"id": r.id, "status": r.status}
+
+    # Only one approved version of a resource title should be active for a subject.
+    previous_versions = db.scalars(select(Resource).where(
+        Resource.subject_id == r.subject_id,
+        Resource.title == r.title,
+        Resource.id != r.id,
+        Resource.status == "APPROVED",
+    )).all()
+    for previous in previous_versions:
+        previous.status = "ARCHIVED"
+        set_resource_status(previous.id, "ARCHIVED")
+        audit(db, u, "RESOURCE_ARCHIVED", "RESOURCE", previous.id,
+              json.dumps({"replaced_by_resource_id": r.id}))
+
     r.status = "APPROVED"
     set_resource_status(r.id, "APPROVED")
     audit(db, u, "RESOURCE_APPROVED", "RESOURCE", r.id)
@@ -382,6 +468,16 @@ def approve_resource_v2(resource_id: int, db: Session = Depends(get_db), u=Depen
 def compare_syllabus(p: SyllabusCompareRequest, db: Session = Depends(get_db), u=Depends(require_roles("ADMIN", "TEACHER"))):
     if not can_access_subject(db, u, p.subject_id):
         raise HTTPException(403, "Subject access denied")
+    if p.source_resource_id is not None:
+        source_resource = db.get(Resource, p.source_resource_id)
+        if not source_resource or source_resource.subject_id != p.subject_id:
+            raise HTTPException(400, "source_resource_id must belong to the requested subject")
+    latest_version = db.scalar(select(func.max(SyllabusVersion.version)).where(
+        SyllabusVersion.subject_id == p.subject_id
+    )) or 0
+    expected_version = latest_version + 1
+    if p.version is not None and p.version != expected_version:
+        raise HTTPException(409, f"Next syllabus version must be {expected_version}")
     active = db.scalar(select(SyllabusVersion).where(
         SyllabusVersion.subject_id == p.subject_id, SyllabusVersion.status == "ACTIVE"
     ).order_by(SyllabusVersion.version.desc()))
@@ -392,6 +488,11 @@ def compare_syllabus(p: SyllabusCompareRequest, db: Session = Depends(get_db), u
         except Exception:
             old = []
     new = [x.strip() for x in p.topic_names if x.strip()]
+    if not new:
+        raise HTTPException(400, "At least one syllabus topic is required")
+    normalized_new = [normalize_key(x) for x in new]
+    if len(normalized_new) != len(set(normalized_new)):
+        raise HTTPException(400, "Syllabus topics must be unique")
     old_map, new_map = {normalize_key(x): x for x in old}, {normalize_key(x): x for x in new}
     changes = []
     for k, v in new_map.items():
@@ -400,7 +501,7 @@ def compare_syllabus(p: SyllabusCompareRequest, db: Session = Depends(get_db), u
         else: changes.append(("UNCHANGED", v, v))
     for k, v in old_map.items():
         if k not in new_map: changes.append(("REMOVED", v, None))
-    version = p.version or ((active.version + 1) if active else 1)
+    version = expected_version
 
     # Keep the normalized Topic table synchronized with the active syllabus version.
     # Existing topics retain completion/progress; removed topics are archived and new
@@ -438,6 +539,10 @@ def compare_syllabus(p: SyllabusCompareRequest, db: Session = Depends(get_db), u
             topic.status = "ARCHIVED"
             topic.version = version
 
+    # Keep the generated schedule synchronized with additions, removals, and
+    # reordering in the newly active syllabus version.
+    rebuild_plan(db, p.subject_id)
+
     if active: active.status = "ARCHIVED"
     sv = SyllabusVersion(subject_id=p.subject_id, version=version, source_resource_id=p.source_resource_id,
                          status="ACTIVE", summary=json.dumps({"topics": new}))
@@ -467,9 +572,11 @@ def syllabus_changes(subject_id: int, db: Session = Depends(get_db), u=Depends(c
 def generate_content(p: GenerateRequest, db: Session = Depends(get_db), u=Depends(require_roles("ADMIN", "TEACHER"))):
     if not can_access_subject(db, u, p.subject_id):
         raise HTTPException(403, "Subject access denied")
-    topic = db.get(Topic, p.topic_id) if p.topic_id else None
-    if topic and topic.subject_id != p.subject_id:
-        raise HTTPException(400, "Topic does not belong to subject")
+    topic = db.get(Topic, p.topic_id) if p.topic_id is not None else None
+    if p.topic_id is not None and (
+        not topic or topic.subject_id != p.subject_id or topic.status != "ACTIVE"
+    ):
+        raise HTTPException(400, "topic_id must belong to the requested subject and be active")
     contexts = approved_contexts(db, p.subject_id, p.instructions or (topic.topic_name if topic else p.content_type))
     if not contexts:
         raise HTTPException(409, APPROVED_RESOURCE_MESSAGE)
@@ -588,6 +695,10 @@ def update_content_status(content_id: int, p: ContentStatusUpdate, db: Session =
     }
     if target not in allowed.get(c.status, set()):
         raise HTTPException(409, f"Invalid content transition: {c.status} -> {target}")
+    if target in {"APPROVED", "PUBLISHED"} and c.topic_id is not None:
+        topic = db.get(Topic, c.topic_id)
+        if not topic or topic.subject_id != c.subject_id or topic.status != "ACTIVE":
+            raise HTTPException(409, "Content linked to an inactive topic cannot be approved or published")
     c.status = target
     audit(db, u, "CONTENT_STATUS_CHANGED", "CONTENT", c.id,
           json.dumps({"from": previous, "to": target}))
@@ -601,7 +712,9 @@ def download_artifact(artifact_id: int, db: Session = Depends(get_db), u=Depends
     if not a or not can_access_subject(db, u, a.subject_id):
         raise HTTPException(404, "Artifact not found")
     c = db.get(Content, a.content_id) if a.content_id else None
-    if u.role == "STUDENT" and c and c.status != "PUBLISHED":
+    if u.role == "STUDENT" and (not c or c.status != "PUBLISHED"):
+        # Orphaned/legacy artifacts without a published content record must
+        # not bypass the publication gate.
         raise HTTPException(403, "Artifact not published")
     data = get_object(a.storage_key)
     if data is None:
@@ -615,7 +728,10 @@ def download_artifact(artifact_id: int, db: Session = Depends(get_db), u=Depends
 def ask_v2(subject_id: int, question: str, db: Session = Depends(get_db), u=Depends(current_user)):
     if not can_access_subject(db, u, subject_id):
         raise HTTPException(403, "Subject access denied")
-    return grounded_answer(question, approved_contexts(db, subject_id, question))
+    result = grounded_answer(question, approved_contexts(db, subject_id, question))
+    audit(db, u, "AI_ASK", "SUBJECT", subject_id, question[:500])
+    db.commit()
+    return result
 
 
 @router.post("/pyq/questions/bulk")
@@ -638,9 +754,9 @@ def add_pyq_questions(p: PYQBulkRequest, db: Session = Depends(get_db),
             subject_id=p.subject_id,
             resource_id=p.resource_id,
             year=item.year,
-            question_no=item.question_no,
+            question_no=item.question_no.strip() if item.question_no else None,
             question_text=text_value,
-            marks=max(float(item.marks), 0.0),
+            marks=float(item.marks),
         )
         db.add(q)
         created.append(q)
@@ -775,9 +891,12 @@ def edit_plan(subject_id: int, p: PlanEdit, db: Session = Depends(get_db), u=Dep
         t.status = "ARCHIVED"
     elif action == "COMPLETE":
         t.completed = True
-        for item in db.scalars(select(TeachingPlan).where(TeachingPlan.subject_id == subject_id, TeachingPlan.topic_id == t.id)).all():
-            item.status = "COMPLETED"
-            item.actual_hours = item.planned_hours
+        for item in db.scalars(select(TeachingPlan).where(
+            TeachingPlan.subject_id == subject_id, TeachingPlan.topic_id == t.id
+        )).all():
+            if item.status != "COMPLETED":
+                item.status = "COMPLETED"
+                item.actual_hours = item.planned_hours
     elif action == "MERGE" and p.note:
         t.topic_name = f"{t.topic_name} + {p.note}"
     elif action == "SPLIT" and p.note:
@@ -823,9 +942,23 @@ def submit_assignment(p: AssignmentSubmit, db: Session = Depends(get_db), u=Depe
     if existing:
         raise HTTPException(409, "Assignment already submitted")
     s = AssignmentSubmission(content_id=c.id, student_id=u.id, answer_text=p.answer_text.strip())
-    db.add(s); db.flush()
+    db.add(s)
+    try:
+        # The database uniqueness constraint closes the race between the
+        # duplicate pre-check above and concurrent submission requests.
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        duplicate = db.scalar(select(AssignmentSubmission.id).where(
+            AssignmentSubmission.content_id == c.id,
+            AssignmentSubmission.student_id == u.id,
+        ))
+        if duplicate is not None:
+            raise HTTPException(409, "Assignment already submitted")
+        raise
     db.add(Progress(student_id=u.id, subject_id=c.subject_id, topic_id=c.topic_id,
-                    activity_type="ASSIGNMENT", score=0, max_score=100, completed=True))
+                    assignment_submission_id=s.id, activity_type="ASSIGNMENT",
+                    score=0, max_score=100, completed=True))
     audit(db, u, "SUBMIT_ASSIGNMENT", "ASSIGNMENT", c.id,
           json.dumps({"submission_id": s.id}))
     db.commit()
@@ -850,15 +983,30 @@ def grade_assignment(submission_id: int, p: GradeSubmission, db: Session = Depen
     content = db.get(Content, s.content_id) if s else None
     if not s or not content or not can_access_subject(db, u, content.subject_id):
         raise HTTPException(404, "Submission not found")
-    if p.score < 0 or p.score > 100:
-        raise HTTPException(400, "Score must be between 0 and 100")
+    if not math.isfinite(p.score) or p.score < 0 or p.score > 100:
+        raise HTTPException(400, "Score must be a finite number between 0 and 100")
     s.score, s.feedback = p.score, p.feedback
     progress = db.scalar(select(Progress).where(
-        Progress.student_id == s.student_id, Progress.subject_id == content.subject_id,
-        Progress.topic_id == content.topic_id, Progress.activity_type == "ASSIGNMENT"
-    ).order_by(Progress.id.desc()))
+        Progress.assignment_submission_id == s.id,
+        Progress.student_id == s.student_id,
+        Progress.subject_id == content.subject_id,
+        Progress.activity_type == "ASSIGNMENT",
+    ))
     if not progress:
-        raise HTTPException(409, "Assignment progress record not found")
+        # Older progress rows predate the explicit association. Only use a legacy
+        # row when the match is unambiguous; never grade an arbitrary assignment.
+        legacy = db.scalars(select(Progress).where(
+            Progress.assignment_submission_id.is_(None),
+            Progress.student_id == s.student_id,
+            Progress.subject_id == content.subject_id,
+            Progress.topic_id == content.topic_id,
+            Progress.activity_type == "ASSIGNMENT",
+        ).order_by(Progress.id.desc())).all()
+        if len(legacy) == 1:
+            progress = legacy[0]
+            progress.assignment_submission_id = s.id
+        else:
+            raise HTTPException(409, "Assignment progress cannot be matched unambiguously to this submission")
     progress.score, progress.max_score, progress.completed = p.score, 100, True
     audit(db, u, "GRADE_ASSIGNMENT", "ASSIGNMENT_SUBMISSION", s.id,
           json.dumps({"score": p.score}))
@@ -1001,20 +1149,43 @@ def generate_quiz(quiz_id: int, db: Session = Depends(get_db), u=Depends(require
     quiz = db.get(Quiz, quiz_id)
     if not quiz or not can_access_subject(db, u, quiz.subject_id):
         raise HTTPException(404, "Quiz not found")
+    if quiz.status != "DRAFT":
+        raise HTTPException(409, "Only DRAFT quizzes can be regenerated")
     contexts = approved_contexts(db, quiz.subject_id, "quiz assessment questions")
     if not contexts:
         raise HTTPException(409, APPROVED_RESOURCE_MESSAGE)
     data = generate_structured("quiz", quiz.title, None, contexts,
                                "Generate 10 multiple-choice questions. Each must have four options and one correct answer.")
-    if not data or not data.get("questions"):
+    if not isinstance(data, dict) or not isinstance(data.get("questions"), list) or not data["questions"]:
         raise HTTPException(502, "Quiz generation failed")
+    valid_items = []
+    for item in data["questions"]:
+        if not isinstance(item, dict):
+            continue
+        question = str(item.get("question") or "").strip()
+        answer = str(item.get("answer") or "").strip()
+        options = item.get("options")
+        try:
+            marks = int(item.get("marks", 1))
+        except (TypeError, ValueError):
+            continue
+        if not question or not answer or marks <= 0 or not isinstance(options, list) or len(options) != 4:
+            continue
+        options = [str(option).strip() for option in options]
+        normalized_options = [option.casefold() for option in options]
+        if any(not option for option in options) or len(set(normalized_options)) != 4:
+            continue
+        matched_answer = next((option for option in options if option.casefold() == answer.casefold()), None)
+        if matched_answer is None:
+            continue
+        valid_items.append({**item, "question": question, "answer": matched_answer, "options": options, "marks": marks})
+    if not valid_items:
+        raise HTTPException(502, "Quiz generation returned no valid four-option questions with matching answers")
     for old in db.scalars(select(QuizQuestion).where(QuizQuestion.quiz_id == quiz.id)).all():
         db.delete(old)
     db.flush()
     topics = db.scalars(select(Topic).where(Topic.subject_id == quiz.subject_id, Topic.status == "ACTIVE")).all()
-    for item in data["questions"]:
-        if not item.get("question") or not item.get("answer"):
-            continue
+    for item in valid_items:
         topic = next((t for t in topics if normalize_key(t.topic_name) in normalize_key(item["question"])), None)
         options = item.get("options") or []
         db.add(QuizQuestion(quiz_id=quiz.id, topic_id=topic.id if topic else None,

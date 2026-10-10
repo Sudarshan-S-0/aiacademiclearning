@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from app.api.routes import pwd
 from app.db.session import Base, get_db
 from app.main import app
-from app.models.models import Department, Semester, Subject, User
+from app.models.models import Department, Semester, Subject, User, Resource, Topic, TeachingPlan
 
 
 @pytest.fixture()
@@ -101,6 +101,15 @@ def test_syllabus_compare_creates_and_versions_topics(client):
         "Unit 1 - Introduction",
         "Unit 2 - Architecture",
     ]
+    removed_topic_id = topics.json()[1]["id"]
+
+    generated_plan = test_client.post(
+        "/api/teaching-plan/generate",
+        headers=headers,
+        json={"subject_id": subject_id},
+    )
+    assert generated_plan.status_code == 200, generated_plan.text
+    assert any(row["topic_id"] == removed_topic_id for row in generated_plan.json())
 
     second = test_client.post(
         "/api/syllabus/compare-v2",
@@ -124,3 +133,70 @@ def test_syllabus_compare_creates_and_versions_topics(client):
         "Unit 1 - Introduction",
         "Unit 3 - Deployment",
     ]
+
+    db = next(app.dependency_overrides[get_db]())
+    try:
+        new_topic = db.query(Topic).filter_by(
+            subject_id=subject_id, topic_name="Unit 3 - Deployment"
+        ).one()
+        assert db.query(TeachingPlan).filter_by(
+            subject_id=subject_id, topic_id=removed_topic_id
+        ).filter(TeachingPlan.status != "COMPLETED").count() == 0
+        assert db.query(TeachingPlan).filter_by(
+            subject_id=subject_id, topic_id=new_topic.id
+        ).count() > 0
+    finally:
+        db.close()
+
+
+def test_syllabus_compare_rejects_foreign_resource_and_invalid_version(client):
+    test_client, subject_id = client
+    headers = login(test_client)
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        subject = session.get(Subject, subject_id)
+        admin = session.query(User).filter_by(email="syllabus-admin@example.com").one()
+        other_subject = Subject(
+            semester_id=subject.semester_id,
+            code="SYLOTHER",
+            name="Other Syllabus Subject",
+            weeks=16,
+            hours_per_week=4,
+            lecture_duration_minutes=60,
+        )
+        session.add(other_subject)
+        session.flush()
+        resource = Resource(
+            subject_id=other_subject.id,
+            uploaded_by=admin.id,
+            title="Foreign Syllabus",
+            resource_type="SYLLABUS",
+            status="DRAFT",
+        )
+        session.add(resource)
+        session.commit()
+        foreign_resource_id = resource.id
+    finally:
+        session.close()
+
+    foreign_source = test_client.post(
+        "/api/syllabus/compare-v2",
+        headers=headers,
+        json={
+            "subject_id": subject_id,
+            "topic_names": ["Unit 1 - Intro"],
+            "source_resource_id": foreign_resource_id,
+        },
+    )
+    assert foreign_source.status_code == 400
+
+    invalid_version = test_client.post(
+        "/api/syllabus/compare-v2",
+        headers=headers,
+        json={
+            "subject_id": subject_id,
+            "topic_names": ["Unit 1 - Intro"],
+            "version": 3,
+        },
+    )
+    assert invalid_version.status_code == 409

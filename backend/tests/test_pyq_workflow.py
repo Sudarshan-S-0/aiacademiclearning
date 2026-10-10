@@ -126,3 +126,111 @@ def test_pyq_analytics_exposes_evidence_based_weightage_and_trends(client):
     assert data["repeated"][0]["count"] == 2
     assert data["repeated"][0]["years"] == [2024, 2025]
     assert any("high priority" in item for item in data["recommendations"])
+
+
+def test_pyq_rejects_topic_from_another_subject(client):
+    test_client, subject_id = client
+    headers = login(test_client)
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        current_subject = session.get(Subject, subject_id)
+        other_subject = Subject(
+            semester_id=current_subject.semester_id,
+            code="PYQOTHER",
+            name="Other PYQ Subject",
+            weeks=16,
+            hours_per_week=4,
+            lecture_duration_minutes=60,
+        )
+        session.add(other_subject)
+        session.flush()
+        foreign_topic = Topic(
+            subject_id=other_subject.id,
+            unit_number=1,
+            topic_name="Foreign Topic",
+            sequence_order=1,
+            estimated_hours=1,
+            status="ACTIVE",
+        )
+        session.add(foreign_topic)
+        session.commit()
+        foreign_topic_id = foreign_topic.id
+    finally:
+        session.close()
+
+    response = test_client.post(
+        "/api/pyq/questions",
+        headers=headers,
+        json={
+            "subject_id": subject_id,
+            "question_text": "A question with no matching foreign topic.",
+            "topic_id": foreign_topic_id,
+        },
+    )
+    assert response.status_code == 400
+
+
+def test_reanalysis_preserves_explicit_topic_selection(client):
+    test_client, subject_id = client
+    headers = login(test_client)
+
+    # Deliberately select Linked Lists for a question whose wording strongly
+    # matches Arrays and Searching; explicit teacher mapping must win.
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        topics = session.query(Topic).filter(Topic.subject_id == subject_id).all()
+        linked_lists = next(topic for topic in topics if topic.topic_name == "Linked Lists")
+        selected_topic_id = linked_lists.id
+    finally:
+        session.close()
+
+    created = test_client.post("/api/pyq/questions", headers=headers, json={
+        "subject_id": subject_id,
+        "question_text": "Explain arrays and searching techniques",
+        "topic_id": selected_topic_id,
+        "marks": 5,
+    })
+    assert created.status_code == 200, created.text
+    question_id = created.json()["id"]
+
+    reanalyzed = test_client.post(
+        f"/api/pyq/reanalyze-v2/{subject_id}", headers=headers
+    )
+    assert reanalyzed.status_code == 200, reanalyzed.text
+
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        from app.models.models import PYQQuestion
+        question = session.get(PYQQuestion, question_id)
+        assert question is not None
+        assert question.topic_id == selected_topic_id
+        assert question.unit_number == 2
+        assert question.mapping_confidence == 1.0
+        arrays_topic_id = next(
+            topic.id for topic in session.query(Topic).filter(Topic.subject_id == subject_id).all()
+            if topic.topic_name == "Arrays and Searching"
+        )
+    finally:
+        session.close()
+
+    archived = test_client.patch(
+        f"/api/topics/{selected_topic_id}",
+        headers=headers,
+        json={"status": "ARCHIVED"},
+    )
+    assert archived.status_code == 200, archived.text
+
+    legacy_reanalysis = test_client.post(
+        f"/api/pyq/reanalyze/{subject_id}",
+        headers=headers,
+    )
+    assert legacy_reanalysis.status_code == 200, legacy_reanalysis.text
+
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        question = session.get(PYQQuestion, question_id)
+        assert question.topic_id == arrays_topic_id
+        assert question.unit_number == 1
+        assert question.mapping_confidence != 1.0
+    finally:
+        session.close()

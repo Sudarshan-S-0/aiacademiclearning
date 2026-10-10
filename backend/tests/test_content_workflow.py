@@ -283,3 +283,47 @@ def test_student_cannot_download_unpublished_artifact(client, monkeypatch):
     )
     assert allowed.status_code == 200
     assert allowed.content == b"private pptx"
+
+
+def test_content_creation_rejects_topic_from_another_subject(client):
+    test_client, subject_id = client
+    admin_headers = login(test_client, "content-admin@example.com", "Admin@123")
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        subject = session.get(Subject, subject_id)
+        other_subject = Subject(
+            semester_id=subject.semester_id,
+            code="CNTOTHER",
+            name="Other Content Subject",
+            weeks=16,
+            hours_per_week=4,
+            lecture_duration_minutes=60,
+        )
+        session.add(other_subject)
+        session.flush()
+        foreign_topic = Topic(
+            subject_id=other_subject.id,
+            unit_number=1,
+            topic_name="Foreign Topic",
+            sequence_order=1,
+            estimated_hours=1,
+            status="ACTIVE",
+        )
+        session.add(foreign_topic)
+        session.commit()
+        foreign_topic_id = foreign_topic.id
+    finally:
+        session.close()
+
+    response = test_client.post(
+        "/api/content",
+        headers=admin_headers,
+        json={
+            "subject_id": subject_id,
+            "topic_id": foreign_topic_id,
+            "title": "Invalid Cross-Subject Content",
+            "content_type": "NOTES",
+            "body": "This should not be saved.",
+        },
+    )
+    assert response.status_code == 400
