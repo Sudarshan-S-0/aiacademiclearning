@@ -441,3 +441,56 @@ def test_inactive_user_cannot_log_in_or_create_login_audit(client):
         ).count() == 0
     finally:
         db.close()
+
+
+def test_topic_schedule_and_status_validation(client):
+    headers = login(client, "teacher@example.com", "Teacher@123")
+
+    created = client.post(
+        "/api/topics",
+        headers=headers,
+        json={
+            "subject_id": 1,
+            "unit_number": 1,
+            "topic_name": "Validated Topic",
+            "sequence_order": 1,
+            "estimated_hours": 2,
+        },
+    )
+    assert created.status_code == 200, created.text
+    topic_id = created.json()["id"]
+
+    for invalid_patch in (
+        {"estimated_hours": 0},
+        {"estimated_hours": -2},
+        {"sequence_order": 0},
+        {"status": "HIDDEN"},
+    ):
+        response = client.patch(
+            f"/api/topics/{topic_id}",
+            headers=headers,
+            json=invalid_patch,
+        )
+        assert response.status_code == 422, (invalid_patch, response.text)
+
+    invalid_create = client.post(
+        "/api/topics",
+        headers=headers,
+        json={
+            "subject_id": 1,
+            "unit_number": 1,
+            "topic_name": "Invalid Topic",
+            "sequence_order": 2,
+            "estimated_hours": 0,
+        },
+    )
+    assert invalid_create.status_code == 422, invalid_create.text
+
+    db = next(iter(app.dependency_overrides[get_db]()))
+    try:
+        topic = db.get(Topic, topic_id)
+        assert topic.estimated_hours == 2
+        assert topic.sequence_order == 1
+        assert topic.status == "ACTIVE"
+    finally:
+        db.close()
