@@ -207,8 +207,26 @@ def get_topics(subject_id:int,db:Session=Depends(get_db),u=Depends(current_user)
 def update_topic(topic_id:int,p:TopicUpdate,db:Session=Depends(get_db),u=Depends(require_roles("ADMIN","TEACHER"))):
     x=db.get(Topic,topic_id)
     if not x or not can_access_subject(db,u,x.subject_id):raise HTTPException(404,"Topic not found")
-    for k,v in p.model_dump(exclude_none=True).items():setattr(x,k,v)
-    audit(db,u,"UPDATE_TOPIC","TOPIC",x.id,json.dumps(p.model_dump(exclude_none=True)));db.commit();return {"id":x.id,"updated":True}
+    updates=p.model_dump(exclude_none=True)
+    if updates.get("completed") is True:
+        # Keep topic completion and its plan rows consistent regardless of
+        # whether completion is triggered through the topic or plan endpoint.
+        for item in db.scalars(select(TeachingPlan).where(
+            TeachingPlan.subject_id==x.subject_id,
+            TeachingPlan.topic_id==x.id,
+        )).all():
+            item.status="COMPLETED"
+            item.actual_hours=item.planned_hours
+    elif updates.get("completed") is False:
+        completed_plan_id=db.scalar(select(TeachingPlan.id).where(
+            TeachingPlan.subject_id==x.subject_id,
+            TeachingPlan.topic_id==x.id,
+            TeachingPlan.status=="COMPLETED",
+        ))
+        if completed_plan_id is not None:
+            raise HTTPException(409,"Completed topics cannot be reopened; completed plan history is preserved")
+    for k,v in updates.items():setattr(x,k,v)
+    audit(db,u,"UPDATE_TOPIC","TOPIC",x.id,json.dumps(updates));db.commit();return {"id":x.id,"updated":True}
 @router.post("/resources")
 async def upload_resource(subject_id:int,title:str|None=None,resource_type:str="REFERENCE",file:UploadFile=File(...),db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
