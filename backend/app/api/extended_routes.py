@@ -539,6 +539,10 @@ def compare_syllabus(p: SyllabusCompareRequest, db: Session = Depends(get_db), u
             topic.status = "ARCHIVED"
             topic.version = version
 
+    # Keep the generated schedule synchronized with additions, removals, and
+    # reordering in the newly active syllabus version.
+    rebuild_plan(db, p.subject_id)
+
     if active: active.status = "ARCHIVED"
     sv = SyllabusVersion(subject_id=p.subject_id, version=version, source_resource_id=p.source_resource_id,
                          status="ACTIVE", summary=json.dumps({"topics": new}))
