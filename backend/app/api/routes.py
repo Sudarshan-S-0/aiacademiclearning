@@ -443,10 +443,17 @@ def add_quiz_question(quiz_id:int,p:QuizQuestionCreate,db:Session=Depends(get_db
     if qz.status != "DRAFT":raise HTTPException(409,"Only DRAFT quizzes can be edited")
     if not p.question_text.strip() or not p.correct_answer.strip():raise HTTPException(400,"Question and correct_answer are required")
     if p.marks <= 0:raise HTTPException(400,"Question marks must be positive")
+    options=[option.strip() for option in (p.options or [])]
+    normalized_options=[option.casefold() for option in options]
+    if len(options) != 4 or any(not option for option in options) or len(set(normalized_options)) != 4:
+        raise HTTPException(400,"Quiz questions must have four distinct, non-empty options")
+    correct_answer=next((option for option in options if option.casefold()==p.correct_answer.strip().casefold()),None)
+    if correct_answer is None:
+        raise HTTPException(400,"correct_answer must match one of the options")
     if p.topic_id is not None:
         topic=db.get(Topic,p.topic_id)
         if not topic or topic.subject_id != qz.subject_id:raise HTTPException(400,"topic_id must belong to the quiz subject")
-    q=QuizQuestion(quiz_id=quiz_id,topic_id=p.topic_id,question_text=p.question_text.strip(),marks=p.marks,correct_answer=p.correct_answer.strip(),options_json=json.dumps(p.options or []));db.add(q);db.flush();audit(db,u,"ADD_QUIZ_QUESTION","QUIZ_QUESTION",q.id);db.commit();return {"id":q.id}
+    q=QuizQuestion(quiz_id=quiz_id,topic_id=p.topic_id,question_text=p.question_text.strip(),marks=p.marks,correct_answer=correct_answer,options_json=json.dumps(options));db.add(q);db.flush();audit(db,u,"ADD_QUIZ_QUESTION","QUIZ_QUESTION",q.id);db.commit();return {"id":q.id}
 @router.patch("/quizzes/{quiz_id}/status")
 def quiz_status(quiz_id:int,status:str=Query(...),db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     q=db.get(Quiz,quiz_id)
