@@ -753,3 +753,60 @@ def test_semester_and_section_validation_and_duplicate_rejection(client):
         json={"semester_id": semester_id, "name": "a"},
     )
     assert duplicate_section.status_code == 409, duplicate_section.text
+
+
+def test_new_content_and_quiz_questions_reject_archived_topics(client):
+    headers = login(client, "teacher@example.com", "Teacher@123")
+    created_topic = client.post(
+        "/api/topics",
+        headers=headers,
+        json={
+            "subject_id": 1,
+            "unit_number": 1,
+            "topic_name": "Archived Content Topic",
+            "sequence_order": 30,
+            "estimated_hours": 1,
+        },
+    )
+    assert created_topic.status_code == 200, created_topic.text
+    topic_id = created_topic.json()["id"]
+
+    archived = client.patch(
+        f"/api/topics/{topic_id}",
+        headers=headers,
+        json={"status": "ARCHIVED"},
+    )
+    assert archived.status_code == 200, archived.text
+
+    content = client.post(
+        "/api/content",
+        headers=headers,
+        json={
+            "subject_id": 1,
+            "topic_id": topic_id,
+            "title": "Content linked to archived topic",
+            "content_type": "NOTES",
+            "body": "Should not be accepted",
+        },
+    )
+    assert content.status_code == 400, content.text
+
+    quiz = client.post(
+        "/api/quizzes",
+        headers=headers,
+        json={"subject_id": 1, "title": "Archived Topic Quiz", "duration_minutes": 20},
+    )
+    assert quiz.status_code == 200, quiz.text
+
+    question = client.post(
+        f"/api/quizzes/{quiz.json()['id']}/questions",
+        headers=headers,
+        json={
+            "topic_id": topic_id,
+            "question_text": "Which option is correct?",
+            "marks": 1,
+            "correct_answer": "A",
+            "options": ["A", "B", "C", "D"],
+        },
+    )
+    assert question.status_code == 400, question.text
