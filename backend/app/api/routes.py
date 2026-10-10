@@ -172,10 +172,29 @@ def resource_status(resource_id:int,status:str=Query(...),db:Session=Depends(get
     x=db.get(Resource,resource_id)
     if not x or not can_access_subject(db,u,x.subject_id):raise HTTPException(404,"Resource not found")
     if status not in {"DRAFT","APPROVED","ARCHIVED"}:raise HTTPException(400,"Invalid resource status")
-    x.status=status
+    if x.status == "ARCHIVED" and status != "ARCHIVED":
+        raise HTTPException(409,"Archived resources cannot be reactivated; upload a new version")
+    if x.status == "APPROVED" and status == "DRAFT":
+        raise HTTPException(409,"Approved resources cannot be returned to draft")
+    if x.status == status:
+        return {"id":x.id,"status":x.status}
+
     from app.services.qdrant import set_resource_status
+    if status == "APPROVED":
+        previous_versions=db.scalars(select(Resource).where(
+            Resource.subject_id == x.subject_id,
+            Resource.title == x.title,
+            Resource.id != x.id,
+            Resource.status == "APPROVED",
+        )).all()
+        for previous in previous_versions:
+            previous.status="ARCHIVED"
+            set_resource_status(previous.id,"ARCHIVED")
+            audit(db,u,"RESOURCE_ARCHIVED","RESOURCE",previous.id,
+                  json.dumps({"replaced_by_resource_id":x.id}))
+    x.status=status
     set_resource_status(x.id,status)
-    audit(db,u,f"RESOURCE_{status}","RESOURCE",x.id);db.commit();return {"id":x.id,"status":status}
+    audit(db,u,f"RESOURCE_{status}","RESOURCE",x.id);db.commit();return {"id":x.id,"status":x.status}
 @router.get("/resources/{resource_id}/download")
 def download_resource(resource_id:int,db:Session=Depends(get_db),u=Depends(current_user)):
     from fastapi.responses import Response
