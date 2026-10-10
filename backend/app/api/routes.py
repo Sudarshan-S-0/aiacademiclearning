@@ -5,6 +5,7 @@ from fastapi import APIRouter,Depends,HTTPException,UploadFile,File,Header,Query
 from passlib.context import CryptContext
 from pydantic import BaseModel,EmailStr,Field
 from sqlalchemy import select,func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.session import get_db
