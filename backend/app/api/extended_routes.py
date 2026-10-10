@@ -3,7 +3,7 @@ import math
 from collections import Counter, defaultdict
 import json, re, uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -77,8 +77,8 @@ class ContentStatusUpdate(BaseModel):
 
 
 class DepartmentCreate(BaseModel):
-    code: str
-    name: str
+    code: str = Field(min_length=1, max_length=20)
+    name: str = Field(min_length=1, max_length=150)
 
 
 class SemesterCreate(BaseModel):
@@ -250,10 +250,22 @@ def pyq_reanalyze(db: Session, subject_id: int):
 
 @router.post("/departments")
 def create_department(p: DepartmentCreate, db: Session = Depends(get_db), u=Depends(require_roles("ADMIN"))):
-    if db.scalar(select(Department).where(Department.code == p.code)):
+    code, name = p.code.strip().upper(), p.name.strip()
+    if not code or not name:
+        raise HTTPException(400, "Department code and name are required")
+    if db.scalar(select(Department.id).where(func.upper(Department.code) == code)) is not None:
         raise HTTPException(409, "Department code already exists")
-    d = Department(code=p.code.strip().upper(), name=p.name.strip())
-    db.add(d); db.flush(); audit(db, u, "CREATE_DEPARTMENT", "DEPARTMENT", d.id); db.commit()
+    if db.scalar(select(Department.id).where(func.lower(Department.name) == name.lower())) is not None:
+        raise HTTPException(409, "Department name already exists")
+    d = Department(code=code, name=name)
+    try:
+        db.add(d)
+        db.flush()
+        audit(db, u, "CREATE_DEPARTMENT", "DEPARTMENT", d.id)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "Department code or name already exists")
     return {"id": d.id, "code": d.code, "name": d.name}
 
 
