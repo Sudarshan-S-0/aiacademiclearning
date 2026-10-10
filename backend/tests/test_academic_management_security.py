@@ -4,6 +4,8 @@ import tempfile
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.exc import IntegrityError
+import pytest
 
 from app.api.routes import pwd
 from app.db.session import Base, get_db
@@ -111,6 +113,18 @@ def test_admin_only_user_and_academic_management():
         duplicate_subject = {**subject_payload, "code": " sec101 "}
         duplicate_response = client.post("/api/subjects", headers=admin_headers, json=duplicate_subject)
         assert duplicate_response.status_code == 409, duplicate_response.text
+
+        # The database constraint must also protect against writes that bypass the API.
+        constraint_db = SessionLocal()
+        constraint_db.add(Subject(
+            semester_id=semester_id,
+            code="SEC101",
+            name="Duplicate inserted outside API",
+        ))
+        with pytest.raises(IntegrityError):
+            constraint_db.commit()
+        constraint_db.rollback()
+        constraint_db.close()
 
     app.dependency_overrides.clear()
     engine.dispose()
