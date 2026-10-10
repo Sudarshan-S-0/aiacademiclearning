@@ -543,12 +543,13 @@ def update_plan(subject_id:int,p:PlanAction,db:Session=Depends(get_db),u=Depends
             TeachingPlan.topic_id==topic.id,
         ).order_by(TeachingPlan.planned_week,TeachingPlan.id)).all()
         for item in topic_plan_rows:
-            item.status="COMPLETED"
-            item.actual_hours=item.planned_hours
-        if p.value is not None and topic_plan_rows:
-            # Preserve the legacy actual-hours override on the first scheduled row,
-            # but do not discard later rows when a topic spans multiple weeks.
-            topic_plan_rows[0].actual_hours=p.value
+            if item.status!="COMPLETED":
+                item.status="COMPLETED"
+                item.actual_hours=item.planned_hours
+        if p.value is not None:
+            # Apply the legacy actual-hours override to the first unfinished row,
+            # without overwriting hours already recorded on completed rows.
+            plan.actual_hours=p.value
         topic.completed=True
     elif p.action=="duration":
         new_hours=float(p.value or topic.estimated_hours)
