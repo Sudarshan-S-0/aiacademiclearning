@@ -198,7 +198,15 @@ def enrollment(p:EnrollmentCreate,db:Session=Depends(get_db),u=Depends(require_r
 @router.post("/topics")
 def create_topic(p:TopicCreate,db:Session=Depends(get_db),u=Depends(require_roles("ADMIN","TEACHER"))):
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
-    x=Topic(**p.model_dump());db.add(x);db.flush();audit(db,u,"CREATE_TOPIC","TOPIC",x.id);db.commit();return {"id":x.id,"topic_name":x.topic_name}
+    topic_name=p.topic_name.strip()
+    if not topic_name:raise HTTPException(400,"Topic name is required")
+    duplicate=db.scalar(select(Topic.id).where(
+        Topic.subject_id==p.subject_id,
+        func.lower(func.trim(Topic.topic_name))==topic_name.lower(),
+    ))
+    if duplicate is not None:raise HTTPException(409,"Topic name already exists for this subject")
+    x=Topic(**{**p.model_dump(),"topic_name":topic_name})
+    db.add(x);db.flush();audit(db,u,"CREATE_TOPIC","TOPIC",x.id);db.commit();return {"id":x.id,"topic_name":x.topic_name}
 @router.get("/subjects/{subject_id}/topics")
 def get_topics(subject_id:int,db:Session=Depends(get_db),u=Depends(current_user)):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
