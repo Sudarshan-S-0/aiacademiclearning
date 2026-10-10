@@ -7,7 +7,7 @@ import tempfile
 
 from app.main import app, _hits
 from app.db.session import Base, get_db
-from app.models.models import User, Department, Semester, Subject, TeacherSubject, Enrollment, Content, Resource, ResourceChunk, Topic, Quiz, TeachingPlan
+from app.models.models import User, Department, Semester, Subject, TeacherSubject, Enrollment, Content, Resource, ResourceChunk, Topic, Quiz, TeachingPlan, AuditLog
 from app.api.routes import pwd
 
 
@@ -386,3 +386,30 @@ def test_teacher_cannot_mutate_records_in_unassigned_subject(client):
         assert verify.get(TeachingPlan, plan_id).planned_hours == 2
     finally:
         verify.close()
+
+
+
+def test_public_student_registration_is_audited(client):
+    response = client.post(
+        "/api/auth/register",
+        json={
+            "full_name": "New Student",
+            "email": "new.student@example.com",
+            "password": "NewStudent@123",
+            "role": "STUDENT",
+        },
+    )
+    assert response.status_code == 200, response.text
+    user_id = response.json()["id"]
+
+    db = next(iter(app.dependency_overrides[get_db]()))
+    try:
+        events = db.query(AuditLog).filter(
+            AuditLog.action == "REGISTER_STUDENT",
+            AuditLog.entity_type == "USER",
+            AuditLog.entity_id == user_id,
+        ).all()
+        assert len(events) == 1
+        assert events[0].actor_id is None
+    finally:
+        db.close()
