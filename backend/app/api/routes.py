@@ -60,6 +60,20 @@ def can_access_subject(db,u,subject_id):
     if u.role=="TEACHER":return db.scalar(select(TeacherSubject.id).where(TeacherSubject.teacher_id==u.id,TeacherSubject.subject_id==subject_id)) is not None
     if u.role=="STUDENT":return db.scalar(select(Enrollment.id).where(Enrollment.student_id==u.id,Enrollment.subject_id==subject_id)) is not None
     return False
+def approved_contexts_from_hits(db,subject_id,hits):
+    contexts=[]
+    for hit in hits:
+        if hit.get("status")!="APPROVED" or hit.get("subject_id")!=subject_id:
+            continue
+        resource_id=hit.get("resource_id")
+        resource=db.get(Resource,resource_id) if resource_id else None
+        if not resource or resource.subject_id!=subject_id or resource.status!="APPROVED":
+            continue
+        page=hit.get("page")
+        section=hit.get("section")
+        citation=f"page {page}, {section}" if page and section else section or (f"page {page}" if page else resource.title)
+        contexts.append({"status":"APPROVED","source":resource.title,"text":hit.get("text",""),"citation":citation})
+    return contexts
 @router.get("/health")
 def health():return {"status":"ok","service":"ai-academic-learning"}
 @router.post("/auth/register")
@@ -173,6 +187,10 @@ def download_resource(resource_id:int,db:Session=Depends(get_db),u=Depends(curre
 @router.post("/syllabus/versions")
 def syllabus_version(subject_id:int,resource_id:int|None=None,summary:str|None=None,db:Session=Depends(get_db),u=Depends(require_roles("ADMIN","TEACHER"))):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
+    if resource_id is not None:
+        resource=db.get(Resource,resource_id)
+        if not resource or resource.subject_id != subject_id:
+            raise HTTPException(400,"resource_id must belong to the requested subject")
     current=db.scalar(select(func.max(SyllabusVersion.version)).where(SyllabusVersion.subject_id==subject_id)) or 0
     v=SyllabusVersion(subject_id=subject_id,version=current+1,source_resource_id=resource_id,summary=summary);db.add(v);db.flush();audit(db,u,"CREATE_SYLLABUS_VERSION","SYLLABUS",v.id);db.commit();return {"id":v.id,"version":v.version}
 @router.get("/syllabus/{subject_id}/versions")
@@ -182,16 +200,19 @@ def syllabus_versions(subject_id:int,db:Session=Depends(get_db),u=Depends(curren
 @router.post("/content")
 def create_content(p:ContentCreate,db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
+    if p.topic_id is not None:
+        topic=db.get(Topic,p.topic_id)
+        if not topic or topic.subject_id != p.subject_id:
+            raise HTTPException(400,"topic_id must belong to the requested subject")
     x=Content(**p.model_dump(),status="IN_REVIEW",created_by=u.id);db.add(x);db.flush();audit(db,u,"CREATE_CONTENT","CONTENT",x.id);db.commit();return {"id":x.id,"status":x.status}
 @router.post("/ai/ask")
 def ask_ai(p:AskRequest,db:Session=Depends(get_db),u=Depends(current_user)):
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
     hits=search_chunks(p.subject_id,p.question,top_k=8)
-    if hits:
-        contexts=[{"status":"APPROVED","source":h.get("source","resource"),"text":h.get("text",""),"citation":f"page {h['page']}, {h['section']}" if h.get("page") and h.get("section") else h.get("section") or ("page "+str(h["page"]) if h.get("page") else "resource chunk")} for h in hits]
-    else:
+    contexts=approved_contexts_from_hits(db,p.subject_id,hits)
+    if not contexts:
         rs=db.scalars(select(Resource).where(Resource.subject_id==p.subject_id,Resource.status=="APPROVED")).all()
-        contexts=[{"status":"APPROVED","source":r.title,"text":r.extracted_text or ""} for r in rs]
+        contexts=[{"status":"APPROVED","source":r.title,"text":r.extracted_text or "","citation":r.title} for r in rs if r.extracted_text]
     result=grounded_answer(p.question,contexts);audit(db,u,"AI_ASK","SUBJECT",p.subject_id,p.question[:500]);db.commit();return result
 @router.post("/ai/prompt-preview")
 def ai_prompt_preview(question:str,subject_id:int,db:Session=Depends(get_db),u=Depends(current_user)):
@@ -204,20 +225,32 @@ def generate_content(p:AIContentRequest,db:Session=Depends(get_db),u=Depends(req
     rs=db.scalars(select(Resource).where(Resource.subject_id==p.subject_id,Resource.status=="APPROVED")).all()
     if not rs:raise HTTPException(400,"Approve at least one academic resource before AI generation")
     topic=db.get(Topic,p.topic_id) if p.topic_id else None
+    if p.topic_id is not None and (not topic or topic.subject_id != p.subject_id):
+        raise HTTPException(400,"topic_id must belong to the requested subject")
     query=f"Create {p.content_type} titled '{p.title or p.content_type}' for topic '{topic.topic_name if topic else 'the subject'}'. {p.instructions or ''}"
     hits=search_chunks(p.subject_id,query,top_k=12)
-    contexts=[{"status":"APPROVED","source":h.get("source","resource"),"text":h.get("text",""),"citation":f"page {h['page']}, {h['section']}" if h.get("page") and h.get("section") else h.get("section") or ("page "+str(h["page"]) if h.get("page") else "resource chunk")} for h in hits]
+    contexts=approved_contexts_from_hits(db,p.subject_id,hits)
     if not contexts:
-        contexts=[{"status":"APPROVED","source":r.title,"text":r.extracted_text or ""} for r in rs]
-    prompt=build_rag_prompt(query,contexts)
-    body=gemini_generate(prompt) or ("AI generation requires GEMINI_API_KEY. Approved-resource context is ready for generation.\n\n"+(rs[0].extracted_text or "")[:2500])
-    x=Content(subject_id=p.subject_id,topic_id=p.topic_id,title=p.title or f"AI {p.content_type}",content_type=p.content_type,body=body,status="IN_REVIEW",source_reference=", ".join(sorted({x.get("source","resource") for x in contexts})),generated_by_ai=True);db.add(x);db.flush();audit(db,u,"AI_GENERATE_CONTENT","CONTENT",x.id,p.content_type);db.commit();return {"id":x.id,"status":x.status,"body":x.body,"sources":[r.title for r in rs]}
+        contexts=[{"status":"APPROVED","source":r.title,"text":r.extracted_text or "","citation":r.title} for r in rs if r.extracted_text]
+    if not contexts:
+        raise HTTPException(409,"Approved resources contain no extractable text for generation")
+    body=gemini_generate(build_rag_prompt(query,contexts))
+    if not body:
+        raise HTTPException(502,"AI generation failed or GEMINI_API_KEY is not configured")
+    x=Content(subject_id=p.subject_id,topic_id=p.topic_id,title=p.title or f"AI {p.content_type}",content_type=p.content_type,body=body,status="IN_REVIEW",source_reference=", ".join(sorted({x.get("source","resource") for x in contexts})),generated_by_ai=True);db.add(x);db.flush();audit(db,u,"AI_GENERATE_CONTENT","CONTENT",x.id,p.content_type);db.commit();return {"id":x.id,"status":x.status,"body":x.body,"sources":[x.get("source","resource") for x in contexts]}
 @router.post("/pyq/questions")
 def add_pyq(p:PYQCreate,db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
+    selected_topic=db.get(Topic,p.topic_id) if p.topic_id is not None else None
+    if p.topic_id is not None and (not selected_topic or selected_topic.subject_id != p.subject_id):
+        raise HTTPException(400,"topic_id must belong to the requested subject")
     ts=db.scalars(select(Topic).where(Topic.subject_id==p.subject_id,Topic.status=="ACTIVE")).all()
     q=PYQQuestion(**p.model_dump(),frequency_key=re.sub(r'[^a-z0-9 ]','',p.question_text.lower())[:255])
-    if ts:
+    if selected_topic:
+        q.topic_id=selected_topic.id
+        q.unit_number=selected_topic.unit_number
+        q.mapping_confidence=1.0
+    elif ts:
         words=set(re.findall(r'[a-z0-9]{3,}',q.question_text.lower()))
         best,best_score=None,0
         for t in ts:
