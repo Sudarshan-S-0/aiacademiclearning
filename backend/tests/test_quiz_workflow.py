@@ -381,3 +381,47 @@ def test_invalid_ai_questions_do_not_delete_existing_draft_questions(client, mon
     detail = test_client.get(f"/api/quizzes/{quiz_id}", headers=admin_headers)
     assert detail.status_code == 200, detail.text
     assert [item["id"] for item in detail.json()["questions"]] == [question_id]
+
+
+def test_malformed_ai_quiz_payload_returns_gateway_error_without_deleting_questions(client, monkeypatch):
+    from app.api import extended_routes
+
+    test_client, subject_id = client
+    headers = login(test_client, "quiz-admin@example.com", "Admin@123")
+    created = test_client.post(
+        "/api/quizzes",
+        headers=headers,
+        json={"subject_id": subject_id, "title": "Malformed AI Draft", "duration_minutes": 20},
+    )
+    assert created.status_code == 200, created.text
+    quiz_id = created.json()["id"]
+    question = test_client.post(
+        f"/api/quizzes/{quiz_id}/questions",
+        headers=headers,
+        json={
+            "question_text": "Keep this question?",
+            "marks": 1,
+            "correct_answer": "A",
+            "options": ["A", "B", "C", "D"],
+            "topic_id": 1,
+        },
+    )
+    assert question.status_code == 200, question.text
+    question_id = question.json()["id"]
+
+    monkeypatch.setattr(
+        extended_routes,
+        "approved_contexts",
+        lambda *args, **kwargs: [{"status": "APPROVED", "source": "Notes", "text": "Grounded context."}],
+    )
+    monkeypatch.setattr(
+        extended_routes,
+        "generate_structured",
+        lambda *args, **kwargs: ["malformed", "non-object", "AI output"],
+    )
+
+    generated = test_client.post(f"/api/quizzes/{quiz_id}/generate", headers=headers)
+    assert generated.status_code == 502, generated.text
+    detail = test_client.get(f"/api/quizzes/{quiz_id}", headers=headers)
+    assert detail.status_code == 200, detail.text
+    assert [item["id"] for item in detail.json()["questions"]] == [question_id]
