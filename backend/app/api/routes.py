@@ -218,11 +218,10 @@ def create_topic(p:TopicCreate,db:Session=Depends(get_db),u=Depends(require_role
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
     topic_name=p.topic_name.strip()
     if not topic_name:raise HTTPException(400,"Topic name is required")
-    duplicate=db.scalar(select(Topic.id).where(
-        Topic.subject_id==p.subject_id,
-        func.lower(func.trim(Topic.topic_name))==topic_name.lower(),
-    ))
-    if duplicate is not None:raise HTTPException(409,"Topic name already exists for this subject")
+    normalized_name=re.sub(r"[^a-z0-9]+"," ",topic_name.lower()).strip()
+    existing_names=db.scalars(select(Topic.topic_name).where(Topic.subject_id==p.subject_id)).all()
+    if any(re.sub(r"[^a-z0-9]+"," ",name.lower()).strip()==normalized_name for name in existing_names):
+        raise HTTPException(409,"Topic name already exists for this subject")
     x=Topic(**{**p.model_dump(),"topic_name":topic_name})
     try:
         db.add(x)
