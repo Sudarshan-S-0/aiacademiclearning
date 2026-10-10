@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 
@@ -231,8 +232,11 @@ def test_assignment_submission_grading_and_object_isolation(client):
     for non_finite_score in (float("nan"), float("inf"), float("-inf")):
         response = test_client.patch(
             f"/api/assignments/submissions/{submission_id}/grade",
-            headers=teacher_headers,
-            json={"score": non_finite_score, "feedback": "Invalid non-finite score"},
+            headers={**teacher_headers, "Content-Type": "application/json"},
+            content=json.dumps(
+                {"score": non_finite_score, "feedback": "Invalid non-finite score"},
+                allow_nan=True,
+            ),
         )
         assert response.status_code == 400, response.text
 
