@@ -415,6 +415,22 @@ def test_public_student_registration_is_audited(client):
     finally:
         db.close()
 
+    duplicate = client.post(
+        "/api/auth/register",
+        json={
+            "full_name": "Duplicate Case Student",
+            "email": "NEW.STUDENT@example.com",
+            "password": "NewStudent@123",
+            "role": "STUDENT",
+        },
+    )
+    assert duplicate.status_code == 409, duplicate.text
+
+    case_insensitive_login = client.post(
+        "/api/auth/login",
+        json={"email": "NEW.STUDENT@example.com", "password": "NewStudent@123"},
+    )
+    assert case_insensitive_login.status_code == 200, case_insensitive_login.text
 
 
 def test_inactive_user_cannot_log_in_or_create_login_audit(client):
