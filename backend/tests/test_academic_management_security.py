@@ -118,7 +118,7 @@ def test_admin_only_user_and_academic_management():
         constraint_db = SessionLocal()
         constraint_db.add(Subject(
             semester_id=semester_id,
-            code="SEC101",
+            code=" sec101 ",
             name="Duplicate inserted outside API",
         ))
         with pytest.raises(IntegrityError):
