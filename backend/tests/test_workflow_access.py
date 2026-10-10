@@ -685,3 +685,71 @@ def test_bulk_pyq_import_rejects_invalid_marks_year_and_text(client):
             json={"subject_id": 1, "questions": [question]},
         )
         assert response.status_code == 422, (invalid_fields, response.text)
+
+
+def test_semester_and_section_validation_and_duplicate_rejection(client):
+    db = next(iter(app.dependency_overrides[get_db]()))
+    try:
+        admin = User(
+            full_name="Test Admin",
+            email="admin@example.com",
+            password_hash=pwd.hash("Admin@123"),
+            role="ADMIN",
+        )
+        db.add(admin)
+        db.commit()
+    finally:
+        db.close()
+
+    headers = login(client, "admin@example.com", "Admin@123")
+
+    invalid_semester = client.post(
+        "/api/semesters",
+        headers=headers,
+        json={"department_id": 1, "academic_year": "2026-27", "semester_number": 0},
+    )
+    assert invalid_semester.status_code == 422, invalid_semester.text
+
+    duplicate_semester = client.post(
+        "/api/semesters",
+        headers=headers,
+        json={"department_id": 1, "academic_year": " 2026-27 ", "semester_number": 1},
+    )
+    assert duplicate_semester.status_code == 409, duplicate_semester.text
+
+    created_semester = client.post(
+        "/api/semesters",
+        headers=headers,
+        json={"department_id": 1, "academic_year": "2027-28", "semester_number": 1},
+    )
+    assert created_semester.status_code == 200, created_semester.text
+    semester_id = created_semester.json()["id"]
+
+    missing_semester = client.post(
+        "/api/sections",
+        headers=headers,
+        json={"semester_id": 99999, "name": "A"},
+    )
+    assert missing_semester.status_code == 404, missing_semester.text
+
+    blank_section = client.post(
+        "/api/sections",
+        headers=headers,
+        json={"semester_id": semester_id, "name": "   "},
+    )
+    assert blank_section.status_code == 400, blank_section.text
+
+    section = client.post(
+        "/api/sections",
+        headers=headers,
+        json={"semester_id": semester_id, "name": " A "},
+    )
+    assert section.status_code == 200, section.text
+    assert section.json()["name"] == "A"
+
+    duplicate_section = client.post(
+        "/api/sections",
+        headers=headers,
+        json={"semester_id": semester_id, "name": "a"},
+    )
+    assert duplicate_section.status_code == 409, duplicate_section.text
