@@ -415,17 +415,42 @@ def add_pyq(p:PYQCreate,db:Session=Depends(get_db),u=Depends(require_roles("TEAC
 @router.post("/pyq/reanalyze/{subject_id}")
 def reanalyze_pyq(subject_id:int,db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
-    qs=db.scalars(select(PYQQuestion).where(PYQQuestion.subject_id==subject_id)).all();ts=db.scalars(select(Topic).where(Topic.subject_id==subject_id,Topic.status=="ACTIVE")).all()
+    qs=db.scalars(select(PYQQuestion).where(PYQQuestion.subject_id==subject_id)).all()
+    ts=db.scalars(select(Topic).where(Topic.subject_id==subject_id,Topic.status=="ACTIVE")).all()
     if not ts:raise HTTPException(400,"Create syllabus topics first")
+    active_topic_ids={topic.id for topic in ts}
     for q in qs:
-        if not q.topic_id:
-            words=set(re.findall(r'[a-z0-9]{3,}',q.question_text.lower()));best=max(ts,key=lambda t:len(words&set(re.findall(r'[a-z0-9]{3,}',t.topic_name.lower()))),default=None)
-            if best:q.topic_id=best.id;q.unit_number=best.unit_number
-    for old in db.scalars(select(TopicWeightage).where(TopicWeightage.subject_id==subject_id)).all():db.delete(old)
-    total=sum(q.marks for q in qs) or 1
-    for t in ts:
-        rows=[q for q in qs if q.topic_id==t.id];marks=sum(q.marks for q in rows);db.add(TopicWeightage(subject_id=subject_id,topic_id=t.id,question_count=len(rows),total_marks=marks,percentage=round(marks*100/total,2)))
-    audit(db,u,"REANALYZE_PYQ","SUBJECT",subject_id,f"questions={len(qs)}");db.commit();return pyq_analysis(subject_id,db,u)
+        # Preserve an explicit selection only while its topic remains active.
+        if q.mapping_confidence==1.0 and q.topic_id in active_topic_ids:
+            q.frequency_key=re.sub(r"[^a-z0-9]+"," ",(q.question_text or "").lower()).strip()[:255]
+            continue
+        words=set(re.findall(r"[a-z0-9]{3,}",(q.question_text or "").lower()))
+        best,best_score=None,0
+        for topic in ts:
+            topic_words=set(re.findall(r"[a-z0-9]{3,}",topic.topic_name.lower()))
+            score=len(words & topic_words)
+            if score>best_score:
+                best,best_score=topic,score
+        if best:
+            q.topic_id=best.id
+            q.unit_number=best.unit_number
+            q.mapping_confidence=round(best_score/max(len(words),1),3)
+        else:
+            q.topic_id=None
+            q.unit_number=None
+            q.mapping_confidence=0.0
+        q.frequency_key=re.sub(r"[^a-z0-9]+"," ",(q.question_text or "").lower()).strip()[:255]
+    for old in db.scalars(select(TopicWeightage).where(TopicWeightage.subject_id==subject_id)).all():
+        db.delete(old)
+    total=sum(float(q.marks or 0) for q in qs) or 1.0
+    for topic in ts:
+        rows=[q for q in qs if q.topic_id==topic.id]
+        marks=sum(float(q.marks or 0) for q in rows)
+        db.add(TopicWeightage(subject_id=subject_id,topic_id=topic.id,question_count=len(rows),
+                              total_marks=marks,percentage=round(marks*100/total,2)))
+    audit(db,u,"REANALYZE_PYQ","SUBJECT",subject_id,f"questions={len(qs)}")
+    db.commit()
+    return pyq_analysis(subject_id,db,u)
 @router.get("/pyq/analysis/{subject_id}")
 def pyq_analysis(subject_id:int,db:Session=Depends(get_db),u=Depends(current_user)):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
