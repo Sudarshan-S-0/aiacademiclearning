@@ -1153,7 +1153,7 @@ def generate_quiz(quiz_id: int, db: Session = Depends(get_db), u=Depends(require
         raise HTTPException(409, APPROVED_RESOURCE_MESSAGE)
     data = generate_structured("quiz", quiz.title, None, contexts,
                                "Generate 10 multiple-choice questions. Each must have four options and one correct answer.")
-    if not data or not data.get("questions"):
+    if not isinstance(data, dict) or not isinstance(data.get("questions"), list) or not data["questions"]:
         raise HTTPException(502, "Quiz generation failed")
     valid_items = []
     for item in data["questions"]:
