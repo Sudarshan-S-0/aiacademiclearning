@@ -720,7 +720,10 @@ def download_artifact(artifact_id: int, db: Session = Depends(get_db), u=Depends
 def ask_v2(subject_id: int, question: str, db: Session = Depends(get_db), u=Depends(current_user)):
     if not can_access_subject(db, u, subject_id):
         raise HTTPException(403, "Subject access denied")
-    return grounded_answer(question, approved_contexts(db, subject_id, question))
+    result = grounded_answer(question, approved_contexts(db, subject_id, question))
+    audit(db, u, "AI_ASK", "SUBJECT", subject_id, question[:500])
+    db.commit()
+    return result
 
 
 @router.post("/pyq/questions/bulk")
