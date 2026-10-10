@@ -173,6 +173,7 @@ class Progress(Base):
     student_id:Mapped[int]=mapped_column(ForeignKey("users.id"))
     subject_id:Mapped[int]=mapped_column(ForeignKey("subjects.id"))
     topic_id:Mapped[int|None]=mapped_column(ForeignKey("syllabus_topics.id"),nullable=True)
+    assignment_submission_id:Mapped[int|None]=mapped_column(ForeignKey("assignment_submissions.id"),nullable=True,index=True)
     activity_type:Mapped[str]=mapped_column(String(40))
     score:Mapped[float]=mapped_column(Float,default=0)
     max_score:Mapped[float]=mapped_column(Float,default=0)
