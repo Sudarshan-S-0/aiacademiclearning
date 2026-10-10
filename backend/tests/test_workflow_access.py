@@ -494,3 +494,58 @@ def test_topic_schedule_and_status_validation(client):
         assert topic.status == "ACTIVE"
     finally:
         db.close()
+
+
+def test_subject_creation_validates_schedule_and_semester(client):
+    db = next(iter(app.dependency_overrides[get_db]()))
+    try:
+        admin = User(
+            full_name="Test Admin",
+            email="admin@example.com",
+            password_hash=pwd.hash("Admin@123"),
+            role="ADMIN",
+        )
+        db.add(admin)
+        db.commit()
+    finally:
+        db.close()
+
+    headers = login(client, "admin@example.com", "Admin@123")
+    base_payload = {
+        "semester_id": 1,
+        "code": "NEW101",
+        "name": "New Subject",
+        "weeks": 16,
+        "hours_per_week": 4,
+        "lecture_duration_minutes": 60,
+    }
+
+    for invalid_fields in (
+        {"weeks": 0},
+        {"hours_per_week": 0},
+        {"lecture_duration_minutes": 0},
+    ):
+        response = client.post(
+            "/api/subjects",
+            headers=headers,
+            json={**base_payload, **invalid_fields},
+        )
+        assert response.status_code == 422, (invalid_fields, response.text)
+
+    missing_semester = client.post(
+        "/api/subjects",
+        headers=headers,
+        json={**base_payload, "semester_id": 99999},
+    )
+    assert missing_semester.status_code == 404, missing_semester.text
+
+    created = client.post("/api/subjects", headers=headers, json=base_payload)
+    assert created.status_code == 200, created.text
+    assert created.json()["code"] == "NEW101"
+
+    blank_name = client.post(
+        "/api/subjects",
+        headers=headers,
+        json={**base_payload, "code": "NEW102", "name": "   "},
+    )
+    assert blank_name.status_code == 400, blank_name.text
