@@ -106,6 +106,12 @@ def test_admin_only_user_and_academic_management():
         assert client.post("/api/subjects", headers=teacher_headers, json=subject_payload).status_code == 403
         assert client.post("/api/subjects", headers=student_headers, json=subject_payload).status_code == 403
 
+        created_subject = client.post("/api/subjects", headers=admin_headers, json=subject_payload)
+        assert created_subject.status_code == 200, created_subject.text
+        duplicate_subject = {**subject_payload, "code": " sec101 "}
+        duplicate_response = client.post("/api/subjects", headers=admin_headers, json=duplicate_subject)
+        assert duplicate_response.status_code == 409, duplicate_response.text
+
     app.dependency_overrides.clear()
     engine.dispose()
     if os.path.exists(db_path):
