@@ -1105,3 +1105,40 @@ def test_ai_ask_v2_writes_audit_event(client, monkeypatch):
         assert event is not None and event.details == "Explain SQL"
     finally:
         db.close()
+
+
+def test_legacy_plan_completion_preserves_all_rows_for_multiweek_topic(client):
+    headers = login(client, "teacher@example.com", "Teacher@123")
+    created = client.post(
+        "/api/topics",
+        headers=headers,
+        json={
+            "subject_id": 1,
+            "unit_number": 1,
+            "topic_name": "Multiweek Completion Topic",
+            "sequence_order": 1,
+            "estimated_hours": 6,
+        },
+    )
+    assert created.status_code == 200, created.text
+    topic_id = created.json()["id"]
+
+    generated = client.post(
+        "/api/teaching-plan/generate",
+        headers=headers,
+        json={"subject_id": 1},
+    )
+    assert generated.status_code == 200, generated.text
+    initial_rows = [row for row in generated.json() if row["topic_id"] == topic_id]
+    assert len(initial_rows) == 2, generated.json()
+
+    completed = client.post(
+        "/api/teaching-plan/1/update",
+        headers=headers,
+        json={"action": "complete", "topic_id": topic_id},
+    )
+    assert completed.status_code == 200, completed.text
+    completed_rows = [row for row in completed.json() if row["topic_id"] == topic_id]
+    assert len(completed_rows) == 2, completed.json()
+    assert all(row["status"] == "COMPLETED" for row in completed_rows)
+    assert sum(row["actual_hours"] for row in completed_rows) == 6
