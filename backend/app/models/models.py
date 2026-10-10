@@ -120,6 +120,14 @@ class SyllabusVersion(Base):
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now())
 class Topic(Base):
     __tablename__="syllabus_topics"
+    __table_args__ = (
+        Index(
+            "uq_topic_subject_name_normalized",
+            "subject_id",
+            func.lower(func.trim(column("topic_name"))),
+            unique=True,
+        ),
+    )
     id:Mapped[int]=mapped_column(primary_key=True)
     subject_id:Mapped[int]=mapped_column(ForeignKey("subjects.id"))
     unit_number:Mapped[int]=mapped_column(Integer)
