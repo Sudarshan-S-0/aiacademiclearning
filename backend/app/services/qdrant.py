@@ -20,6 +20,8 @@ def ensure_collection():
         r=httpx.get(f'{base}/collections/{COLLECTION}',timeout=4)
         if r.status_code==404:
             httpx.put(f'{base}/collections/{COLLECTION}',json={'vectors':{'size':384,'distance':'Cosine'}},timeout=8).raise_for_status()
+        else:
+            r.raise_for_status()
         return True
     except Exception:return False
 
@@ -55,5 +57,11 @@ def search_chunks(subject_id,query,top_k=8):
         },timeout=90)
         if r.status_code>=400:
             r=httpx.post(f'{settings.qdrant_url.rstrip("/")}/collections/{COLLECTION}/points/query',json={'query':embed(query),'limit':top_k,'with_payload':True,'filter':{'must':[{'key':'subject_id','match':{'value':subject_id}},{'key':'status','match':{'value':'APPROVED'}}]}},timeout=90)
-        r.raise_for_status();return [x.get('payload',{}) for x in r.json().get('result',[])]
+        r.raise_for_status()
+        result=r.json().get('result',[])
+        # Qdrant's legacy /points/search endpoint returns a list, while the
+        # newer /points/query endpoint wraps matches in result.points.
+        if isinstance(result,dict):
+            result=result.get('points',[])
+        return [x.get('payload',{}) for x in result if isinstance(x,dict) and isinstance(x.get('payload'),dict)]
     except Exception:return []
