@@ -23,7 +23,7 @@ class TopicCreate(BaseModel): subject_id:int;unit_number:int=Field(ge=1);topic_n
 class TopicUpdate(BaseModel): sequence_order:int|None=Field(default=None,ge=1);estimated_hours:float|None=Field(default=None,gt=0,allow_inf_nan=False);completed:bool|None=None;status:Literal["ACTIVE","ARCHIVED"]|None=None
 class ContentCreate(BaseModel): subject_id:int;topic_id:int|None=None;title:str;content_type:str;body:str;source_reference:str|None=None;generated_by_ai:bool=False
 class PublishAction(BaseModel): status:str
-class PYQCreate(BaseModel): subject_id:int;year:int|None=None;question_no:str|None=None;question_text:str;marks:float=1;topic_id:int|None=None;unit_number:int|None=None
+class PYQCreate(BaseModel): subject_id:int=Field(ge=1);year:int|None=Field(default=None,ge=1900,le=2100);question_no:str|None=None;question_text:str=Field(min_length=1);marks:float=Field(default=1,gt=0,allow_inf_nan=False);topic_id:int|None=Field(default=None,ge=1);unit_number:int|None=Field(default=None,ge=1)
 class PlanAction(BaseModel): action:str;topic_id:int;value:float|int|None=None;new_week:int|None=None;note:str|None=None
 class QuizCreate(BaseModel): subject_id:int;title:str;duration_minutes:int=30;status:str="DRAFT"
 class QuizQuestionCreate(BaseModel): topic_id:int|None=None;question_text:str;marks:int=1;correct_answer:str;options:list[str]|None=None
@@ -285,9 +285,10 @@ def generate_content(p:AIContentRequest,db:Session=Depends(get_db),u=Depends(req
 @router.post("/pyq/questions")
 def add_pyq(p:PYQCreate,db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
+    if not p.question_text.strip():raise HTTPException(400,"Question text is required")
     selected_topic=db.get(Topic,p.topic_id) if p.topic_id is not None else None
-    if p.topic_id is not None and (not selected_topic or selected_topic.subject_id != p.subject_id):
-        raise HTTPException(400,"topic_id must belong to the requested subject")
+    if p.topic_id is not None and (not selected_topic or selected_topic.subject_id != p.subject_id or selected_topic.status != "ACTIVE"):
+        raise HTTPException(400,"topic_id must belong to the requested subject and be active")
     ts=db.scalars(select(Topic).where(Topic.subject_id==p.subject_id,Topic.status=="ACTIVE")).all()
     q=PYQQuestion(**p.model_dump(),frequency_key=re.sub(r'[^a-z0-9 ]','',p.question_text.lower())[:255])
     if selected_topic:
