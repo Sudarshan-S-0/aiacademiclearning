@@ -702,7 +702,9 @@ def download_artifact(artifact_id: int, db: Session = Depends(get_db), u=Depends
     if not a or not can_access_subject(db, u, a.subject_id):
         raise HTTPException(404, "Artifact not found")
     c = db.get(Content, a.content_id) if a.content_id else None
-    if u.role == "STUDENT" and c and c.status != "PUBLISHED":
+    if u.role == "STUDENT" and (not c or c.status != "PUBLISHED"):
+        # Orphaned/legacy artifacts without a published content record must
+        # not bypass the publication gate.
         raise HTTPException(403, "Artifact not published")
     data = get_object(a.storage_key)
     if data is None:
