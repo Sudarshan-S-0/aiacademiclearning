@@ -1043,9 +1043,23 @@ def generate_quiz(quiz_id: int, db: Session = Depends(get_db), u=Depends(require
                                "Generate 10 multiple-choice questions. Each must have four options and one correct answer.")
     if not data or not data.get("questions"):
         raise HTTPException(502, "Quiz generation failed")
-    valid_items = [item for item in data["questions"] if item.get("question") and item.get("answer")]
+    valid_items = []
+    for item in data["questions"]:
+        question = str(item.get("question") or "").strip()
+        answer = str(item.get("answer") or "").strip()
+        options = item.get("options")
+        if not question or not answer or not isinstance(options, list) or len(options) != 4:
+            continue
+        options = [str(option).strip() for option in options]
+        normalized_options = [option.casefold() for option in options]
+        if any(not option for option in options) or len(set(normalized_options)) != 4:
+            continue
+        matched_answer = next((option for option in options if option.casefold() == answer.casefold()), None)
+        if matched_answer is None:
+            continue
+        valid_items.append({**item, "question": question, "answer": matched_answer, "options": options})
     if not valid_items:
-        raise HTTPException(502, "Quiz generation returned no valid questions")
+        raise HTTPException(502, "Quiz generation returned no valid four-option questions with matching answers")
     for old in db.scalars(select(QuizQuestion).where(QuizQuestion.quiz_id == quiz.id)).all():
         db.delete(old)
     db.flush()
