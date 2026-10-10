@@ -373,6 +373,24 @@ def approve_resource_v2(resource_id: int, db: Session = Depends(get_db), u=Depen
     r = db.get(Resource, resource_id)
     if not r or not can_access_subject(db, u, r.subject_id):
         raise HTTPException(404, "Resource not found")
+    if r.status == "ARCHIVED":
+        raise HTTPException(409, "Archived resources cannot be re-approved; upload a new version")
+    if r.status == "APPROVED":
+        return {"id": r.id, "status": r.status}
+
+    # Only one approved version of a resource title should be active for a subject.
+    previous_versions = db.scalars(select(Resource).where(
+        Resource.subject_id == r.subject_id,
+        Resource.title == r.title,
+        Resource.id != r.id,
+        Resource.status == "APPROVED",
+    )).all()
+    for previous in previous_versions:
+        previous.status = "ARCHIVED"
+        set_resource_status(previous.id, "ARCHIVED")
+        audit(db, u, "RESOURCE_ARCHIVED", "RESOURCE", previous.id,
+              json.dumps({"replaced_by_resource_id": r.id}))
+
     r.status = "APPROVED"
     set_resource_status(r.id, "APPROVED")
     audit(db, u, "RESOURCE_APPROVED", "RESOURCE", r.id)
