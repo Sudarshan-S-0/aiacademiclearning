@@ -659,3 +659,29 @@ def test_department_creation_normalizes_and_enforces_uniqueness(client):
     assert created.status_code == 200, created.text
     assert created.json()["code"] == "CS"
     assert created.json()["name"] == "Computer Science"
+
+
+def test_bulk_pyq_import_rejects_invalid_marks_year_and_text(client):
+    headers = login(client, "teacher@example.com", "Teacher@123")
+    base_payload = {
+        "subject_id": 1,
+        "questions": [{
+            "year": 2025,
+            "question_text": "Explain database normalization",
+            "marks": 5,
+        }],
+    }
+
+    for invalid_fields in (
+        {"marks": 0},
+        {"marks": -1},
+        {"year": 2200},
+        {"question_text": ""},
+    ):
+        question = {**base_payload["questions"][0], **invalid_fields}
+        response = client.post(
+            "/api/pyq/questions/bulk",
+            headers=headers,
+            json={"subject_id": 1, "questions": [question]},
+        )
+        assert response.status_code == 422, (invalid_fields, response.text)
