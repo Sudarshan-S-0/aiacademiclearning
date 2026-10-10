@@ -10,7 +10,7 @@ import pytest
 from app.api.routes import pwd
 from app.db.session import Base, get_db
 from app.main import app
-from app.models.models import Department, Semester, Subject, User
+from app.models.models import Department, Enrollment, Semester, Subject, TeacherSubject, User
 
 
 def test_admin_only_user_and_academic_management():
@@ -164,7 +164,62 @@ def test_admin_only_user_and_academic_management():
         with pytest.raises(IntegrityError):
             constraint_db.commit()
         constraint_db.rollback()
+
+        # NULL section assignments must also be unique when academic-year
+        # formatting differs, even when inserts bypass the API.
+        constraint_db.add(TeacherSubject(
+            teacher_id=teacher.id, subject_id=created_subject.json()["id"],
+            section_id=None, academic_year="2027-28",
+        ))
+        constraint_db.commit()
+        constraint_db.add(TeacherSubject(
+            teacher_id=teacher.id, subject_id=created_subject.json()["id"],
+            section_id=None, academic_year=" 2027-28 ",
+        ))
+        with pytest.raises(IntegrityError):
+            constraint_db.commit()
+        constraint_db.rollback()
+
+        constraint_db.add(Enrollment(
+            student_id=student.id, subject_id=created_subject.json()["id"],
+            section_id=None, academic_year="2027-28",
+        ))
+        constraint_db.commit()
+        constraint_db.add(Enrollment(
+            student_id=student.id, subject_id=created_subject.json()["id"],
+            section_id=None, academic_year=" 2027-28 ",
+        ))
+        with pytest.raises(IntegrityError):
+            constraint_db.commit()
+        constraint_db.rollback()
         constraint_db.close()
+
+        # API-level duplicate checks should normalize year whitespace/case too.
+        assignment_payload = {
+            "teacher_id": teacher.id,
+            "subject_id": created_subject.json()["id"],
+            "academic_year": "2026-27",
+        }
+        first_assignment = client.post("/api/assignments", headers=admin_headers, json=assignment_payload)
+        assert first_assignment.status_code == 200, first_assignment.text
+        duplicate_assignment = client.post(
+            "/api/assignments", headers=admin_headers,
+            json={**assignment_payload, "academic_year": " 2026-27 "},
+        )
+        assert duplicate_assignment.status_code == 409, duplicate_assignment.text
+
+        enrollment_payload = {
+            "student_id": student.id,
+            "subject_id": created_subject.json()["id"],
+            "academic_year": "2026-27",
+        }
+        first_enrollment = client.post("/api/enrollments", headers=admin_headers, json=enrollment_payload)
+        assert first_enrollment.status_code == 200, first_enrollment.text
+        duplicate_enrollment = client.post(
+            "/api/enrollments", headers=admin_headers,
+            json={**enrollment_payload, "academic_year": " 2026-27 "},
+        )
+        assert duplicate_enrollment.status_code == 409, duplicate_enrollment.text
 
     app.dependency_overrides.clear()
     engine.dispose()
