@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from app.db.session import get_db
 from app.models.models import *
@@ -859,7 +860,20 @@ def submit_assignment(p: AssignmentSubmit, db: Session = Depends(get_db), u=Depe
     if existing:
         raise HTTPException(409, "Assignment already submitted")
     s = AssignmentSubmission(content_id=c.id, student_id=u.id, answer_text=p.answer_text.strip())
-    db.add(s); db.flush()
+    db.add(s)
+    try:
+        # The database uniqueness constraint closes the race between the
+        # duplicate pre-check above and concurrent submission requests.
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        duplicate = db.scalar(select(AssignmentSubmission.id).where(
+            AssignmentSubmission.content_id == c.id,
+            AssignmentSubmission.student_id == u.id,
+        ))
+        if duplicate is not None:
+            raise HTTPException(409, "Assignment already submitted")
+        raise
     db.add(Progress(student_id=u.id, subject_id=c.subject_id, topic_id=c.topic_id,
                     assignment_submission_id=s.id, activity_type="ASSIGNMENT",
                     score=0, max_score=100, completed=True))
