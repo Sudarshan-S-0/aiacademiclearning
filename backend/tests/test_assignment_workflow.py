@@ -228,6 +228,14 @@ def test_assignment_submission_grading_and_object_isolation(client):
     )
     assert invalid_score.status_code == 400
 
+    for non_finite_score in (float("nan"), float("inf"), float("-inf")):
+        response = test_client.patch(
+            f"/api/assignments/submissions/{submission_id}/grade",
+            headers=teacher_headers,
+            json={"score": non_finite_score, "feedback": "Invalid non-finite score"},
+        )
+        assert response.status_code == 400, response.text
+
     outsider_grade = test_client.patch(
         f"/api/assignments/submissions/{submission_id}/grade",
         headers=outsider_teacher_headers,
