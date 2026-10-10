@@ -1,4 +1,5 @@
 from datetime import datetime,timedelta,timezone
+from typing import Literal
 import json,re,jwt,uuid
 from fastapi import APIRouter,Depends,HTTPException,UploadFile,File,Header,Query
 from passlib.context import CryptContext
@@ -18,8 +19,8 @@ class UserCreate(BaseModel): full_name:str=Field(min_length=2);email:EmailStr;pa
 class SubjectCreate(BaseModel): semester_id:int;code:str;name:str;description:str|None=None;weeks:int=16;hours_per_week:int=4;lecture_duration_minutes:int=60
 class AssignmentCreate(BaseModel): teacher_id:int;subject_id:int;section_id:int|None=None;academic_year:str
 class EnrollmentCreate(BaseModel): student_id:int;subject_id:int;section_id:int|None=None;academic_year:str
-class TopicCreate(BaseModel): subject_id:int;unit_number:int;topic_name:str;sequence_order:int;estimated_hours:float=1
-class TopicUpdate(BaseModel): sequence_order:int|None=None;estimated_hours:float|None=None;completed:bool|None=None;status:str|None=None
+class TopicCreate(BaseModel): subject_id:int;unit_number:int=Field(ge=1);topic_name:str=Field(min_length=1);sequence_order:int=Field(ge=1);estimated_hours:float=Field(default=1,gt=0,allow_inf_nan=False)
+class TopicUpdate(BaseModel): sequence_order:int|None=Field(default=None,ge=1);estimated_hours:float|None=Field(default=None,gt=0,allow_inf_nan=False);completed:bool|None=None;status:Literal["ACTIVE","ARCHIVED"]|None=None
 class ContentCreate(BaseModel): subject_id:int;topic_id:int|None=None;title:str;content_type:str;body:str;source_reference:str|None=None;generated_by_ai:bool=False
 class PublishAction(BaseModel): status:str
 class PYQCreate(BaseModel): subject_id:int;year:int|None=None;question_no:str|None=None;question_text:str;marks:float=1;topic_id:int|None=None;unit_number:int|None=None
