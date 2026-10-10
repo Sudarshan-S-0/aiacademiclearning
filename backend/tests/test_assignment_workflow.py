@@ -5,12 +5,14 @@ import tempfile
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from app.api.routes import pwd
 from app.db.session import Base, get_db
 from app.main import app
 from app.models.models import (
+    AssignmentSubmission,
     Content,
     Department,
     Enrollment,
@@ -195,6 +197,23 @@ def test_assignment_submission_grading_and_object_isolation(client):
         },
     )
     assert duplicate.status_code == 409
+
+    # API pre-checks improve the response, but the database constraint must
+    # independently protect against concurrent requests that pass that check.
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        session.add(AssignmentSubmission(
+            content_id=assignment_id,
+            student_id=session.query(User).filter_by(
+                email="assignment-student@example.com"
+            ).one().id,
+            answer_text="Concurrent duplicate",
+        ))
+        with pytest.raises(IntegrityError):
+            session.commit()
+        session.rollback()
+    finally:
+        session.close()
 
     outsider_submit = test_client.post(
         "/api/assignments/submit",
