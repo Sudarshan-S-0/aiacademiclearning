@@ -810,3 +810,57 @@ def test_new_content_and_quiz_questions_reject_archived_topics(client):
         },
     )
     assert question.status_code == 400, question.text
+
+
+def test_extended_plan_rebuild_respects_completed_week_capacity(client):
+    headers = login(client, "teacher@example.com", "Teacher@123")
+
+    first_topic = client.post(
+        "/api/topics",
+        headers=headers,
+        json={
+            "subject_id": 1,
+            "unit_number": 1,
+            "topic_name": "Completed First Topic",
+            "sequence_order": 1,
+            "estimated_hours": 4,
+        },
+    )
+    assert first_topic.status_code == 200, first_topic.text
+    first_topic_id = first_topic.json()["id"]
+
+    second_topic = client.post(
+        "/api/topics",
+        headers=headers,
+        json={
+            "subject_id": 1,
+            "unit_number": 1,
+            "topic_name": "Remaining Second Topic",
+            "sequence_order": 2,
+            "estimated_hours": 4,
+        },
+    )
+    assert second_topic.status_code == 200, second_topic.text
+    second_topic_id = second_topic.json()["id"]
+
+    generated = client.post(
+        "/api/teaching-plan/generate",
+        headers=headers,
+        json={"subject_id": 1},
+    )
+    assert generated.status_code == 200, generated.text
+
+    completed = client.post(
+        "/api/teaching-plan/edit/1",
+        headers=headers,
+        json={"action": "COMPLETE", "topic_id": first_topic_id},
+    )
+    assert completed.status_code == 200, completed.text
+
+    remaining_rows = [
+        row for row in completed.json()
+        if row["topic_id"] == second_topic_id
+    ]
+    assert remaining_rows, completed.json()
+    assert min(row["week"] for row in remaining_rows) >= 2, completed.json()
+    assert all(row["status"] == "PLANNED" for row in remaining_rows)
