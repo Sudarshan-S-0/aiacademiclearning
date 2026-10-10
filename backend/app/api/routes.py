@@ -81,7 +81,13 @@ def register(p:UserCreate,db:Session=Depends(get_db)):
     role=p.role.upper()
     if role != "STUDENT":raise HTTPException(403,"Public registration is limited to student accounts")
     if db.scalar(select(User).where(User.email==p.email)):raise HTTPException(409,"Email already exists")
-    u=User(full_name=p.full_name,email=p.email,password_hash=pwd.hash(p.password),role=role);db.add(u);db.commit();db.refresh(u);return {"id":u.id,"email":u.email,"role":u.role}
+    u=User(full_name=p.full_name,email=p.email,password_hash=pwd.hash(p.password),role=role)
+    db.add(u)
+    db.flush()
+    audit(db, None, "REGISTER_STUDENT", "USER", u.id)
+    db.commit()
+    db.refresh(u)
+    return {"id":u.id,"email":u.email,"role":u.role}
 @router.post("/auth/login")
 def login(p:Login,db:Session=Depends(get_db)):
     u=db.scalar(select(User).where(User.email==p.email))
