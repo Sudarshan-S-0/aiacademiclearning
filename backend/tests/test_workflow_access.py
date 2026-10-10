@@ -883,3 +883,54 @@ def test_extended_plan_rebuild_respects_completed_week_capacity(client):
     ]
     assert regenerated_remaining, regenerated_rows
     assert min(row["week"] for row in regenerated_remaining) >= 2, regenerated_rows
+
+
+def test_topic_completion_updates_plan_history_and_cannot_be_reopened(client):
+    headers = login(client, "teacher@example.com", "Teacher@123")
+    created = client.post(
+        "/api/topics",
+        headers=headers,
+        json={
+            "subject_id": 1,
+            "unit_number": 1,
+            "topic_name": "Completion Consistency Topic",
+            "sequence_order": 1,
+            "estimated_hours": 2,
+        },
+    )
+    assert created.status_code == 200, created.text
+    topic_id = created.json()["id"]
+
+    generated = client.post(
+        "/api/teaching-plan/generate",
+        headers=headers,
+        json={"subject_id": 1},
+    )
+    assert generated.status_code == 200, generated.text
+
+    completed = client.patch(
+        f"/api/topics/{topic_id}",
+        headers=headers,
+        json={"completed": True},
+    )
+    assert completed.status_code == 200, completed.text
+
+    db = next(iter(app.dependency_overrides[get_db]()))
+    try:
+        topic = db.get(Topic, topic_id)
+        plan_rows = db.query(TeachingPlan).filter_by(
+            subject_id=1, topic_id=topic_id
+        ).all()
+        assert topic.completed is True
+        assert plan_rows
+        assert all(row.status == "COMPLETED" for row in plan_rows)
+        assert all(row.actual_hours == row.planned_hours for row in plan_rows)
+    finally:
+        db.close()
+
+    reopened = client.patch(
+        f"/api/topics/{topic_id}",
+        headers=headers,
+        json={"completed": False},
+    )
+    assert reopened.status_code == 409, reopened.text
