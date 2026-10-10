@@ -18,6 +18,7 @@ from app.models.models import (
     TeacherSubject,
     Topic,
     User,
+    Progress,
 )
 
 
@@ -325,3 +326,64 @@ def test_assignment_submission_grading_and_object_isolation(client):
         headers=student_headers,
     )
     assert student_admin_analytics.status_code == 403
+
+
+def test_grading_updates_only_the_progress_for_that_submission(client):
+    test_client, subject_id, first_assignment_id = client
+    student_headers = login(test_client, "assignment-student@example.com", "Student@123")
+    teacher_headers = login(test_client, "assignment-teacher@example.com", "Teacher@123")
+    student_id = test_client.get("/api/me", headers=student_headers).json()["id"]
+
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        first_assignment = session.get(Content, first_assignment_id)
+        second_assignment = Content(
+            subject_id=subject_id,
+            topic_id=first_assignment.topic_id,
+            title="Second Array Assignment",
+            content_type="ASSIGNMENT",
+            body="Explain array traversal.",
+            status="PUBLISHED",
+            version=1,
+            generated_by_ai=False,
+            created_by=first_assignment.created_by,
+        )
+        session.add(second_assignment)
+        session.commit()
+        second_assignment_id = second_assignment.id
+    finally:
+        session.close()
+
+    first_submission = test_client.post(
+        "/api/assignments/submit",
+        headers=student_headers,
+        json={"content_id": first_assignment_id, "answer_text": "First assignment answer."},
+    )
+    second_submission = test_client.post(
+        "/api/assignments/submit",
+        headers=student_headers,
+        json={"content_id": second_assignment_id, "answer_text": "Second assignment answer."},
+    )
+    assert first_submission.status_code == 200, first_submission.text
+    assert second_submission.status_code == 200, second_submission.text
+
+    graded = test_client.patch(
+        f"/api/assignments/submissions/{first_submission.json()['submission_id']}/grade",
+        headers=teacher_headers,
+        json={"score": 91, "feedback": "First assignment graded."},
+    )
+    assert graded.status_code == 200, graded.text
+
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        first_progress = session.query(Progress).filter(
+            Progress.assignment_submission_id == first_submission.json()["submission_id"]
+        ).one()
+        second_progress = session.query(Progress).filter(
+            Progress.assignment_submission_id == second_submission.json()["submission_id"]
+        ).one()
+        assert first_progress.student_id == student_id
+        assert first_progress.score == 91
+        assert second_progress.score == 0
+    finally:
+        session.close()
