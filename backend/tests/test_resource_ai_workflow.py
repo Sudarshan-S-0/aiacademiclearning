@@ -262,3 +262,30 @@ def test_ai_ask_enforces_subject_isolation(monkeypatch):
     engine.dispose()
     if os.path.exists(db_path):
         os.remove(db_path)
+
+
+def test_legacy_ai_context_validation_rechecks_current_resource_status():
+    from types import SimpleNamespace
+    from app.api.routes import approved_contexts_from_hits
+
+    class FakeDB:
+        resources = {
+            1: SimpleNamespace(id=1, subject_id=7, status="ARCHIVED", title="Archived Notes"),
+            2: SimpleNamespace(id=2, subject_id=7, status="APPROVED", title="Approved Notes"),
+            3: SimpleNamespace(id=3, subject_id=8, status="APPROVED", title="Other Subject Notes"),
+        }
+
+        def get(self, model, resource_id):
+            return self.resources.get(resource_id)
+
+    hits = [
+        {"status": "APPROVED", "subject_id": 7, "resource_id": 1, "text": "stale archived text"},
+        {"status": "APPROVED", "subject_id": 7, "resource_id": 2, "text": "approved text", "page": 2, "section": "Arrays"},
+        {"status": "APPROVED", "subject_id": 8, "resource_id": 3, "text": "other subject text"},
+    ]
+
+    contexts = approved_contexts_from_hits(FakeDB(), 7, hits)
+    assert len(contexts) == 1
+    assert contexts[0]["source"] == "Approved Notes"
+    assert contexts[0]["text"] == "approved text"
+    assert contexts[0]["citation"] == "page 2, Arrays"
