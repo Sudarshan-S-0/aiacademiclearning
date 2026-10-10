@@ -568,9 +568,11 @@ def syllabus_changes(subject_id: int, db: Session = Depends(get_db), u=Depends(c
 def generate_content(p: GenerateRequest, db: Session = Depends(get_db), u=Depends(require_roles("ADMIN", "TEACHER"))):
     if not can_access_subject(db, u, p.subject_id):
         raise HTTPException(403, "Subject access denied")
-    topic = db.get(Topic, p.topic_id) if p.topic_id else None
-    if topic and topic.subject_id != p.subject_id:
-        raise HTTPException(400, "Topic does not belong to subject")
+    topic = db.get(Topic, p.topic_id) if p.topic_id is not None else None
+    if p.topic_id is not None and (
+        not topic or topic.subject_id != p.subject_id or topic.status != "ACTIVE"
+    ):
+        raise HTTPException(400, "topic_id must belong to the requested subject and be active")
     contexts = approved_contexts(db, p.subject_id, p.instructions or (topic.topic_name if topic else p.content_type))
     if not contexts:
         raise HTTPException(409, APPROVED_RESOURCE_MESSAGE)
