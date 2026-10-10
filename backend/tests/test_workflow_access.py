@@ -612,3 +612,50 @@ def test_pyq_rejects_invalid_marks_blank_text_and_archived_topic(client):
 
     valid = client.post("/api/pyq/questions", headers=headers, json=base_payload)
     assert valid.status_code == 200, valid.text
+
+
+def test_department_creation_normalizes_and_enforces_uniqueness(client):
+    db = next(iter(app.dependency_overrides[get_db]()))
+    try:
+        admin = User(
+            full_name="Test Admin",
+            email="admin@example.com",
+            password_hash=pwd.hash("Admin@123"),
+            role="ADMIN",
+        )
+        db.add(admin)
+        db.commit()
+    finally:
+        db.close()
+
+    headers = login(client, "admin@example.com", "Admin@123")
+
+    duplicate_code = client.post(
+        "/api/departments",
+        headers=headers,
+        json={"code": " test ", "name": "Another Department"},
+    )
+    assert duplicate_code.status_code == 409, duplicate_code.text
+
+    duplicate_name = client.post(
+        "/api/departments",
+        headers=headers,
+        json={"code": "OTHER", "name": " test department "},
+    )
+    assert duplicate_name.status_code == 409, duplicate_name.text
+
+    blank_code = client.post(
+        "/api/departments",
+        headers=headers,
+        json={"code": "   ", "name": "Valid Name"},
+    )
+    assert blank_code.status_code == 400, blank_code.text
+
+    created = client.post(
+        "/api/departments",
+        headers=headers,
+        json={"code": " cs ", "name": " Computer Science "},
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["code"] == "CS"
+    assert created.json()["name"] == "Computer Science"
