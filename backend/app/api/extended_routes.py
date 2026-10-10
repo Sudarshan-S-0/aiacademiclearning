@@ -179,11 +179,22 @@ def rebuild_plan(db: Session, subject_id: int):
         select(Topic).where(Topic.subject_id == subject_id, Topic.status == "ACTIVE")
         .order_by(Topic.sequence_order, Topic.id)
     ).all()
-    completed = {
-        x.topic_id: x for x in db.scalars(
-            select(TeachingPlan).where(TeachingPlan.subject_id == subject_id, TeachingPlan.status == "COMPLETED")
-        ).all()
-    }
+
+    # Completed plan rows are historical records: preserve them and reserve
+    # their hours so rebuilding cannot schedule unfinished topics on top of
+    # already-completed teaching time.
+    completed_rows = db.scalars(
+        select(TeachingPlan).where(
+            TeachingPlan.subject_id == subject_id,
+            TeachingPlan.status == "COMPLETED",
+        )
+    ).all()
+    completed_topic_ids = {row.topic_id for row in completed_rows}
+    occupied = {week: 0.0 for week in range(1, subject.weeks + 1)}
+    for row in completed_rows:
+        if 1 <= row.planned_week <= subject.weeks:
+            occupied[row.planned_week] = occupied.get(row.planned_week, 0.0) + float(row.planned_hours or 0)
+
     for old in db.scalars(
         select(TeachingPlan).where(
             TeachingPlan.subject_id == subject_id, TeachingPlan.status != "COMPLETED"
@@ -191,30 +202,25 @@ def rebuild_plan(db: Session, subject_id: int):
     ).all():
         db.delete(old)
     db.flush()
-    week, used = 1, 0.0
+
     for topic in active_topics:
-        if topic.id in completed:
+        if topic.id in completed_topic_ids or topic.completed:
             continue
-        remaining = max(float(topic.estimated_hours), 0.0)
-        while remaining > 0 and week <= subject.weeks:
-            capacity = max(float(subject.hours_per_week) - used, 0.0)
+        remaining = max(float(topic.estimated_hours or 0), 0.0)
+        for week in range(1, subject.weeks + 1):
+            if remaining <= 0:
+                break
+            capacity = max(float(subject.hours_per_week) - occupied.get(week, 0.0), 0.0)
             if capacity <= 0:
-                week += 1
-                used = 0.0
                 continue
             hours = min(remaining, capacity)
             db.add(TeachingPlan(
                 subject_id=subject_id, topic_id=topic.id, planned_week=week,
                 planned_hours=hours, status="PLANNED"
             ))
+            occupied[week] = occupied.get(week, 0.0) + hours
             remaining -= hours
-            used += hours
-            if used >= subject.hours_per_week:
-                week += 1
-                used = 0.0
     return plan_rows(db, subject_id)
-
-
 def pyq_reanalyze(db: Session, subject_id: int):
     qs = db.scalars(select(PYQQuestion).where(PYQQuestion.subject_id == subject_id)).all()
     topics = db.scalars(
