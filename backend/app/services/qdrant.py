@@ -6,14 +6,12 @@ _model=None
 
 def embed(text:str)->list[float]:
     global _model
-    try:
-        if _model is None:
-            from sentence_transformers import SentenceTransformer
-            _model=SentenceTransformer(MODEL_NAME)
-        return _model.encode(text,normalize_embeddings=True).tolist()
-    except Exception:
-        raw=hashlib.sha256(text.encode()).digest()
-        return [((raw[i%len(raw)]/255)*2-1) for i in range(384)]
+    if _model is None:
+        from sentence_transformers import SentenceTransformer
+        _model=SentenceTransformer(MODEL_NAME)
+    # Never substitute fabricated hash vectors: they have no semantic meaning
+    # and can make retrieval appear healthy while returning arbitrary documents.
+    return _model.encode(text,normalize_embeddings=True).tolist()
 
 def ensure_collection():
     if not settings.qdrant_url:return False
@@ -28,14 +26,17 @@ def ensure_collection():
 def upsert_chunks(resource_id,subject_id,chunks,source,status='DRAFT'):
     if not chunks or not ensure_collection():return False
     points=[]
-    for i,c in enumerate(chunks):
-        if isinstance(c, str):
-            c={'text':c,'page':None,'section':None}
-        pid=int(hashlib.sha1(f'{resource_id}:{i}'.encode()).hexdigest()[:15],16)
-        points.append({'id':pid,'vector':embed(c['text']),'payload':{**c,'resource_id':resource_id,'subject_id':subject_id,'source':source,'status':status}})
     try:
-        httpx.put(f'{settings.qdrant_url.rstrip("/")}/collections/{COLLECTION}/points',json={'points':points},timeout=90).raise_for_status();return True
-    except Exception:return False
+        for i,c in enumerate(chunks):
+            if isinstance(c, str):
+                c={'text':c,'page':None,'section':None}
+            pid=int(hashlib.sha1(f'{resource_id}:{i}'.encode()).hexdigest()[:15],16)
+            points.append({'id':pid,'vector':embed(c['text']),'payload':{**c,'resource_id':resource_id,'subject_id':subject_id,'source':source,'status':status}})
+        httpx.put(f'{settings.qdrant_url.rstrip("/")}/collections/{COLLECTION}/points',json={'points':points},timeout=90).raise_for_status()
+        return True
+    except Exception:
+        # Callers retain the PostgreSQL chunks and can use the lexical fallback.
+        return False
 
 def set_resource_status(resource_id,status):
     if not settings.qdrant_url:return False
