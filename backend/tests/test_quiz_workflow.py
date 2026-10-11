@@ -457,3 +457,30 @@ def test_quiz_creation_rejects_blank_or_oversized_titles_and_invalid_durations(c
     )
     assert detail.status_code == 200, detail.text
     assert detail.json()["title"] == "Valid Quiz"
+
+def test_quiz_question_schema_bounds_text_options_and_marks():
+    import pytest
+    from pydantic import ValidationError
+    from app.api.routes import QuizQuestionCreate
+
+    valid = {
+        "question_text": "What is 2 + 2?",
+        "marks": 1,
+        "correct_answer": "4",
+        "options": ["3", "4", "5", "6"],
+    }
+    assert QuizQuestionCreate(**valid).marks == 1
+
+    invalid_payloads = [
+        {**valid, "question_text": "Q" * 5001},
+        {**valid, "correct_answer": "A" * 501},
+        {**valid, "options": ["A" * 501, "B", "C", "D"]},
+        {**valid, "options": ["A", "B", "C", "D", "E"]},
+        {**valid, "marks": 0},
+        {**valid, "marks": 101},
+        {**valid, "topic_id": 0},
+    ]
+    for payload in invalid_payloads:
+        with pytest.raises(ValidationError):
+            QuizQuestionCreate(**payload)
+
