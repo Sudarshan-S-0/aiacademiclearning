@@ -397,25 +397,34 @@ async def upload_resource_v2(subject_id: int, title: str, resource_type: str = "
                              u=Depends(require_roles("ADMIN", "TEACHER"))):
     if not can_access_subject(db, u, subject_id):
         raise HTTPException(403, "Subject access denied")
-    data = await file.read()
+    filename = (filename or "").strip()
+    if not filename or len(filename) > 255:
+        raise HTTPException(400, "A valid filename is required")
+    title = title.strip()
+    if not title or len(title) > 200:
+        raise HTTPException(400, "Title must be between 1 and 200 characters")
+    resource_type = resource_type.strip().upper()
+    if not resource_type or len(resource_type) > 50:
+        raise HTTPException(400, "A valid resource type is required")
     allowed = {"pdf", "docx", "pptx", "txt", "md", "csv", "json", "py", "java", "js", "ts", "html", "css"}
-    ext = file.filename.lower().rsplit(".", 1)[-1] if "." in file.filename else ""
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
     if ext not in allowed:
         raise HTTPException(415, "Unsupported file type")
+    data = await file.read(20 * 1024 * 1024 + 1)
     if len(data) > 20 * 1024 * 1024:
         raise HTTPException(413, "Maximum file size is 20 MB")
     latest = db.scalar(select(Resource).where(Resource.subject_id == subject_id, Resource.title == title)
                        .order_by(Resource.version.desc()))
     version = (latest.version + 1) if latest else 1
-    text, pages = extract_text(file.filename, data)
-    sections, _ = extract_sections(file.filename, data)
-    safe_filename = re.sub(r"[^a-zA-Z0-9._-]", "_", file.filename)
+    text, pages = extract_text(filename, data)
+    sections, _ = extract_sections(filename, data)
+    safe_filename = re.sub(r"[^a-zA-Z0-9._-]", "_", filename)
     key = f"subjects/{subject_id}/resources/{version}-{uuid.uuid4().hex}-{safe_filename}"
     stored = put_object(key, data, file.content_type or "application/octet-stream")
     if not stored:
         raise HTTPException(503, "Object storage is unavailable; resource was not saved")
     r = Resource(subject_id=subject_id, uploaded_by=u.id, title=title,
-                 resource_type=resource_type.upper(), storage_key=key,
+                 resource_type=resource_type, storage_key=key,
                  status="DRAFT", version=version, extracted_text=text, page_count=pages,
                  parent_resource_id=latest.id if latest else None)
     db.add(r); db.flush()
@@ -429,7 +438,7 @@ async def upload_resource_v2(subject_id: int, title: str, resource_type: str = "
     db.flush()
     upsert_chunks(r.id, subject_id, chunks, title, "DRAFT")
     audit(db, u, "UPLOAD_RESOURCE", "RESOURCE", r.id,
-          json.dumps({"version": version, "filename": file.filename, "chunks": len(chunks)}))
+          json.dumps({"version": version, "filename": filename, "chunks": len(chunks)}))
     db.commit()
     return {"id": r.id, "version": version, "status": "DRAFT", "pages": pages, "chunks": len(chunks), "stored": stored}
 
