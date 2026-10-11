@@ -1,10 +1,17 @@
 from datetime import datetime
-from sqlalchemy import String, Text, Integer, Float, Boolean, ForeignKey, DateTime, func, UniqueConstraint
+from sqlalchemy import String, Text, Integer, Float, Boolean, ForeignKey, DateTime, func, UniqueConstraint, Index, column
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.session import Base
 
 class User(Base):
     __tablename__="users"
+    __table_args__ = (
+        Index(
+            "uq_users_email_normalized",
+            func.lower(func.trim(column("email"))),
+            unique=True,
+        ),
+    )
     id:Mapped[int]=mapped_column(primary_key=True)
     full_name:Mapped[str]=mapped_column(String(120))
     email:Mapped[str]=mapped_column(String(255),unique=True,index=True)
@@ -19,6 +26,15 @@ class Department(Base):
     name:Mapped[str]=mapped_column(String(150),unique=True)
 class Semester(Base):
     __tablename__="semesters"
+    __table_args__ = (
+        Index(
+            "uq_semester_department_year_number",
+            "department_id",
+            func.lower(func.trim(column("academic_year"))),
+            "semester_number",
+            unique=True,
+        ),
+    )
     id:Mapped[int]=mapped_column(primary_key=True)
     department_id:Mapped[int]=mapped_column(ForeignKey("departments.id"))
     academic_year:Mapped[str]=mapped_column(String(20))
@@ -26,11 +42,22 @@ class Semester(Base):
     regulation:Mapped[str|None]=mapped_column(String(40),nullable=True)
 class Section(Base):
     __tablename__="sections"
+    __table_args__ = (
+        Index(
+            "uq_section_semester_name_normalized",
+            "semester_id",
+            func.lower(func.trim(column("name"))),
+            unique=True,
+        ),
+    )
     id:Mapped[int]=mapped_column(primary_key=True)
     semester_id:Mapped[int]=mapped_column(ForeignKey("semesters.id"))
     name:Mapped[str]=mapped_column(String(30))
 class Subject(Base):
     __tablename__="subjects"
+    __table_args__ = (
+        Index("uq_subject_semester_code_normalized", "semester_id", func.lower(func.trim(column("code"))), unique=True),
+    )
     id:Mapped[int]=mapped_column(primary_key=True)
     semester_id:Mapped[int]=mapped_column(ForeignKey("semesters.id"))
     code:Mapped[str]=mapped_column(String(30),index=True)
@@ -47,7 +74,17 @@ class TeacherSubject(Base):
     subject_id:Mapped[int]=mapped_column(ForeignKey("subjects.id"))
     section_id:Mapped[int|None]=mapped_column(ForeignKey("sections.id"),nullable=True)
     academic_year:Mapped[str]=mapped_column(String(20))
-    __table_args__=(UniqueConstraint("teacher_id","subject_id","section_id","academic_year"),)
+    __table_args__=(
+        UniqueConstraint("teacher_id","subject_id","section_id","academic_year"),
+        Index(
+            "uq_teacher_assignment_normalized",
+            "teacher_id",
+            "subject_id",
+            func.coalesce(column("section_id"), 0),
+            func.lower(func.trim(column("academic_year"))),
+            unique=True,
+        ),
+    )
 class Enrollment(Base):
     __tablename__="student_enrollments"
     id:Mapped[int]=mapped_column(primary_key=True)
@@ -55,7 +92,16 @@ class Enrollment(Base):
     subject_id:Mapped[int]=mapped_column(ForeignKey("subjects.id"))
     section_id:Mapped[int|None]=mapped_column(ForeignKey("sections.id"),nullable=True)
     academic_year:Mapped[str]=mapped_column(String(20))
-    __table_args__=(UniqueConstraint("student_id","subject_id","academic_year"),)
+    __table_args__=(
+        UniqueConstraint("student_id","subject_id","academic_year"),
+        Index(
+            "uq_enrollment_normalized_year",
+            "student_id",
+            "subject_id",
+            func.lower(func.trim(column("academic_year"))),
+            unique=True,
+        ),
+    )
 class Resource(Base):
     __tablename__="resources"
     id:Mapped[int]=mapped_column(primary_key=True)
@@ -81,6 +127,14 @@ class SyllabusVersion(Base):
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now())
 class Topic(Base):
     __tablename__="syllabus_topics"
+    __table_args__ = (
+        Index(
+            "uq_topic_subject_name_normalized",
+            "subject_id",
+            func.lower(func.trim(column("topic_name"))),
+            unique=True,
+        ),
+    )
     id:Mapped[int]=mapped_column(primary_key=True)
     subject_id:Mapped[int]=mapped_column(ForeignKey("subjects.id"))
     unit_number:Mapped[int]=mapped_column(Integer)
@@ -173,6 +227,7 @@ class Progress(Base):
     student_id:Mapped[int]=mapped_column(ForeignKey("users.id"))
     subject_id:Mapped[int]=mapped_column(ForeignKey("subjects.id"))
     topic_id:Mapped[int|None]=mapped_column(ForeignKey("syllabus_topics.id"),nullable=True)
+    assignment_submission_id:Mapped[int|None]=mapped_column(ForeignKey("assignment_submissions.id"),nullable=True,index=True)
     activity_type:Mapped[str]=mapped_column(String(40))
     score:Mapped[float]=mapped_column(Float,default=0)
     max_score:Mapped[float]=mapped_column(Float,default=0)
@@ -233,6 +288,9 @@ class GeneratedArtifact(Base):
 
 class AssignmentSubmission(Base):
     __tablename__="assignment_submissions"
+    __table_args__ = (
+        UniqueConstraint("content_id", "student_id", name="uq_assignment_submission_content_student"),
+    )
     id:Mapped[int]=mapped_column(primary_key=True)
     content_id:Mapped[int]=mapped_column(ForeignKey("content_items.id"))
     student_id:Mapped[int]=mapped_column(ForeignKey("users.id"))

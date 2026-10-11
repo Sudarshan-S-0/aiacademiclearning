@@ -52,6 +52,14 @@ def test_resource_ai_publication_gates(monkeypatch):
             assert me.status_code == 200, me.text
             return headers
         th=login("wf.teacher@example.com","Teacher@123")
+        blank_content=client.post("/api/content",headers=th,json={
+            "subject_id":subject_id,"title":"   ","content_type":"notes","body":"body"
+        })
+        assert blank_content.status_code==400, blank_content.text
+        oversized_content_title=client.post("/api/content",headers=th,json={
+            "subject_id":subject_id,"title":"T"*201,"content_type":"notes","body":"body"
+        })
+        assert oversized_content_title.status_code==422, oversized_content_title.text
         blocked=client.post("/api/ai/generate",headers=th,json={"subject_id":subject_id,"content_type":"notes","title":"Notes"})
         assert blocked.status_code==409
         approved=client.patch(f"/api/resources/{resource_id}/approve-v2",headers=th)
@@ -75,6 +83,85 @@ def test_resource_ai_publication_gates(monkeypatch):
         assert published.status_code==200, published.text
         visible=client.get(f"/api/content?subject_id={subject_id}",headers=sh)
         assert [x["title"] for x in visible.json()]==["Notes"]
+
+        # Approving a replacement resource version must archive the old approved
+        # version so retrieval cannot mix stale and current source material.
+        session = next(app.dependency_overrides[get_db]())
+        try:
+            teacher = session.query(User).filter_by(email="wf.teacher@example.com").one()
+            newer = Resource(
+                subject_id=subject_id,
+                uploaded_by=teacher.id,
+                title="Approved Notes",
+                resource_type="REFERENCE",
+                status="DRAFT",
+                extracted_text="Updated approved academic source.",
+                page_count=1,
+                version=2,
+                parent_resource_id=resource_id,
+            )
+            session.add(newer)
+            session.commit()
+            newer_resource_id = newer.id
+        finally:
+            session.close()
+
+        replacement_approval = client.patch(
+            f"/api/resources/{newer_resource_id}/approve-v2",
+            headers=th,
+        )
+        assert replacement_approval.status_code == 200, replacement_approval.text
+        session = next(app.dependency_overrides[get_db]())
+        try:
+            assert session.get(Resource, resource_id).status == "ARCHIVED"
+            assert session.get(Resource, newer_resource_id).status == "APPROVED"
+        finally:
+            session.close()
+
+        cannot_reapprove_archived = client.patch(
+            f"/api/resources/{resource_id}/approve-v2",
+            headers=th,
+        )
+        assert cannot_reapprove_archived.status_code == 409
+
+        # The legacy status endpoint must enforce the same version rules.
+        session = next(app.dependency_overrides[get_db]())
+        try:
+            teacher = session.query(User).filter_by(email="wf.teacher@example.com").one()
+            latest = Resource(
+                subject_id=subject_id,
+                uploaded_by=teacher.id,
+                title="Approved Notes",
+                resource_type="REFERENCE",
+                status="DRAFT",
+                extracted_text="Third version.",
+                page_count=1,
+                version=3,
+                parent_resource_id=newer_resource_id,
+            )
+            session.add(latest)
+            session.commit()
+            latest_resource_id = latest.id
+        finally:
+            session.close()
+
+        legacy_approval = client.patch(
+            f"/api/resources/{latest_resource_id}/status?status=APPROVED",
+            headers=th,
+        )
+        assert legacy_approval.status_code == 200, legacy_approval.text
+        session = next(app.dependency_overrides[get_db]())
+        try:
+            assert session.get(Resource, newer_resource_id).status == "ARCHIVED"
+            assert session.get(Resource, latest_resource_id).status == "APPROVED"
+        finally:
+            session.close()
+
+        legacy_reactivation = client.patch(
+            f"/api/resources/{resource_id}/status?status=APPROVED",
+            headers=th,
+        )
+        assert legacy_reactivation.status_code == 409
     app.dependency_overrides.clear()
     engine.dispose()
     if os.path.exists(db_path): os.remove(db_path)
@@ -104,8 +191,18 @@ def test_resource_chunks_are_persisted_with_citations(monkeypatch):
         try: yield db
         finally: db.close()
     app.dependency_overrides[get_db]=override
-    monkeypatch.setattr("app.api.routes.put_object",lambda *a,**k:True)
+    legacy_storage_keys = []
+    v2_storage_keys = []
+    monkeypatch.setattr(
+        "app.api.routes.put_object",
+        lambda key, *a, **k: legacy_storage_keys.append(key) or True,
+    )
     monkeypatch.setattr("app.api.routes.upsert_chunks",lambda *a,**k:True)
+    monkeypatch.setattr(
+        "app.api.extended_routes.put_object",
+        lambda key, *a, **k: v2_storage_keys.append(key) or True,
+    )
+    monkeypatch.setattr("app.api.extended_routes.upsert_chunks",lambda *a,**k:True)
 
     with TestClient(app) as client:
         response=client.post("/api/auth/login",json={"email":"chunk.teacher@example.com","password":"Teacher@123"})
@@ -119,6 +216,51 @@ def test_resource_chunks_are_persisted_with_citations(monkeypatch):
         assert upload.status_code==200,upload.text
         data=upload.json()
         assert data["chunks"]>=1
+
+        # Same subject, same filename, and different titles must not overwrite
+        # each other's object in either upload endpoint.
+        second_upload=client.post(
+            f"/api/resources?subject_id={subject_id}&title=Notes%20Copy&resource_type=REFERENCE",
+            headers=headers,
+            files={"file":("notes.txt",b"Different material for another resource.","text/plain")},
+        )
+        assert second_upload.status_code==200,second_upload.text
+        assert len(legacy_storage_keys)==2
+        assert len(set(legacy_storage_keys))==2
+
+        for title in ("Notes V2", "Notes V2 Copy"):
+            v2_upload=client.post(
+                f"/api/resources/upload-v2?subject_id={subject_id}&title={title}&resource_type=REFERENCE",
+                headers=headers,
+                files={"file":("notes.txt",b"Another distinct resource.","text/plain")},
+            )
+            assert v2_upload.status_code==200,v2_upload.text
+        assert len(v2_storage_keys)==2
+        assert len(set(v2_storage_keys))==2
+
+        # Upload handlers must reject oversized payloads after reading at most
+        # the configured limit plus one byte, rather than buffering arbitrary files.
+        oversized = b"x" * (20 * 1024 * 1024 + 1)
+        legacy_too_large = client.post(
+            f"/api/resources?subject_id={subject_id}&title=TooLarge&resource_type=REFERENCE",
+            headers=headers,
+            files={"file": ("large.txt", oversized, "text/plain")},
+        )
+        assert legacy_too_large.status_code == 413, legacy_too_large.text
+
+        v2_too_large = client.post(
+            f"/api/resources/upload-v2?subject_id={subject_id}&title=TooLarge&resource_type=REFERENCE",
+            headers=headers,
+            files={"file": ("large.txt", oversized, "text/plain")},
+        )
+        assert v2_too_large.status_code == 413, v2_too_large.text
+
+        blank_v2_title = client.post(
+            f"/api/resources/upload-v2?subject_id={subject_id}&title=%20%20%20&resource_type=REFERENCE",
+            headers=headers,
+            files={"file": ("notes.txt", b"small file", "text/plain")},
+        )
+        assert blank_v2_title.status_code == 400, blank_v2_title.text
 
         chunks=client.get(f"/api/resources/{data['id']}/chunks",headers=headers)
         assert chunks.status_code==200,chunks.text
@@ -262,3 +404,71 @@ def test_ai_ask_enforces_subject_isolation(monkeypatch):
     engine.dispose()
     if os.path.exists(db_path):
         os.remove(db_path)
+
+
+def test_legacy_ai_context_validation_rechecks_current_resource_status():
+    from types import SimpleNamespace
+    from app.api.routes import approved_contexts_from_hits
+
+    class FakeDB:
+        resources = {
+            1: SimpleNamespace(id=1, subject_id=7, status="ARCHIVED", title="Archived Notes"),
+            2: SimpleNamespace(id=2, subject_id=7, status="APPROVED", title="Approved Notes"),
+            3: SimpleNamespace(id=3, subject_id=8, status="APPROVED", title="Other Subject Notes"),
+        }
+
+        def get(self, model, resource_id):
+            return self.resources.get(resource_id)
+
+    hits = [
+        {"status": "APPROVED", "subject_id": 7, "resource_id": 1, "text": "stale archived text"},
+        {"status": "APPROVED", "subject_id": 7, "resource_id": 2, "text": "approved text", "page": 2, "section": "Arrays"},
+        {"status": "APPROVED", "subject_id": 8, "resource_id": 3, "text": "other subject text"},
+    ]
+
+    contexts = approved_contexts_from_hits(FakeDB(), 7, hits)
+    assert len(contexts) == 1
+    assert contexts[0]["source"] == "Approved Notes"
+    assert contexts[0]["text"] == "approved text"
+    assert contexts[0]["citation"] == "page 2, Arrays"
+
+
+
+def test_extended_ai_retrieval_rejects_resource_from_another_subject(monkeypatch):
+    from types import SimpleNamespace
+    from app.api import extended_routes
+
+    class EmptyRows:
+        def all(self):
+            return []
+
+    class FakeDB:
+        def get(self, model, resource_id):
+            return SimpleNamespace(
+                id=resource_id,
+                subject_id=8,
+                status="APPROVED",
+                title="Private Subject Notes",
+            )
+
+        def execute(self, statement):
+            return EmptyRows()
+
+        def scalars(self, statement):
+            return EmptyRows()
+
+    # Simulate stale or corrupted vector metadata that claims this resource
+    # belongs to subject 7 even though the database says subject 8.
+    monkeypatch.setattr(
+        extended_routes,
+        "search_chunks",
+        lambda *args, **kwargs: [{
+            "status": "APPROVED",
+            "subject_id": 7,
+            "resource_id": 99,
+            "text": "private subject content",
+            "page": 1,
+        }],
+    )
+
+    assert extended_routes.approved_contexts(FakeDB(), 7, "question") == []

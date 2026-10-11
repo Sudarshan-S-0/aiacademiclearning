@@ -33,11 +33,31 @@ class Settings(BaseSettings):
             problems.append("DATABASE_URL must point to a non-local database host")
 
         origins = [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
-        if not origins or any(
-            (urlsplit(origin).hostname or "").lower() in {"localhost", "127.0.0.1", "::1"}
-            for origin in origins
-        ):
-            problems.append("CORS_ORIGINS must contain explicit non-local frontend origins")
+        invalid_origins = []
+        for origin in origins:
+            try:
+                parsed = urlsplit(origin)
+                hostname = (parsed.hostname or "").lower()
+                # Accessing .port validates that any explicit port is numeric
+                # and within the valid TCP port range.
+                port = parsed.port
+            except ValueError:
+                invalid_origins.append(origin)
+                continue
+            if (
+                parsed.scheme != "https"
+                or not hostname
+                or hostname in {"localhost", "127.0.0.1", "::1"}
+                or "*" in hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.path not in {"", "/"}
+                or parsed.query
+                or parsed.fragment
+            ):
+                invalid_origins.append(origin)
+        if not origins or invalid_origins:
+            problems.append("CORS_ORIGINS must contain valid HTTPS origins without local hosts, paths, credentials, or wildcards")
 
         if self.minio_access_key == "minio" or self.minio_secret_key == "minio123":
             problems.append("MINIO_ACCESS_KEY and MINIO_SECRET_KEY must not use demo credentials")

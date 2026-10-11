@@ -4,11 +4,13 @@ import tempfile
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.exc import IntegrityError
+import pytest
 
 from app.api.routes import pwd
 from app.db.session import Base, get_db
 from app.main import app
-from app.models.models import Department, Semester, Subject, User
+from app.models.models import Department, Enrollment, Semester, Subject, TeacherSubject, User
 
 
 def test_admin_only_user_and_academic_management():
@@ -41,6 +43,7 @@ def test_admin_only_user_and_academic_management():
                    password_hash=pwd.hash("Student@123"), role="STUDENT")
     db.add_all([admin, teacher, student])
     db.commit()
+    teacher_id, student_id = teacher.id, student.id
     db.close()
 
     def override():
@@ -105,6 +108,119 @@ def test_admin_only_user_and_academic_management():
         }
         assert client.post("/api/subjects", headers=teacher_headers, json=subject_payload).status_code == 403
         assert client.post("/api/subjects", headers=student_headers, json=subject_payload).status_code == 403
+
+        # Database indexes must reject normalized duplicates even when bypassing the API.
+        constraint_db = SessionLocal()
+        constraint_db.add(Semester(
+            department_id=department_id,
+            academic_year=" 2026-27 ",
+            semester_number=1,
+            regulation="DUPLICATE",
+        ))
+        with pytest.raises(IntegrityError):
+            constraint_db.commit()
+        constraint_db.rollback()
+
+        from app.models.models import Section
+        constraint_db.add(Section(semester_id=semester_id, name="A"))
+        constraint_db.commit()
+        constraint_db.add(Section(semester_id=semester_id, name=" a "))
+        with pytest.raises(IntegrityError):
+            constraint_db.commit()
+        constraint_db.rollback()
+        constraint_db.close()
+
+        # Normalized duplicates should return a conflict response, not a 500.
+        duplicate_semester_payload = {
+            "department_id": department_id,
+            "academic_year": " 2026-27 ",
+            "semester_number": 1,
+            "regulation": "DUPLICATE",
+        }
+        duplicate_semester_response = client.post(
+            "/api/semesters", headers=admin_headers, json=duplicate_semester_payload
+        )
+        assert duplicate_semester_response.status_code == 409, duplicate_semester_response.text
+
+        duplicate_section_response = client.post(
+            "/api/sections",
+            headers=admin_headers,
+            json={"semester_id": semester_id, "name": " a "},
+        )
+        assert duplicate_section_response.status_code == 409, duplicate_section_response.text
+
+        created_subject = client.post("/api/subjects", headers=admin_headers, json=subject_payload)
+        assert created_subject.status_code == 200, created_subject.text
+        duplicate_subject = {**subject_payload, "code": " sec101 "}
+        duplicate_response = client.post("/api/subjects", headers=admin_headers, json=duplicate_subject)
+        assert duplicate_response.status_code == 409, duplicate_response.text
+
+        # The database constraint must also protect against writes that bypass the API.
+        constraint_db = SessionLocal()
+        constraint_db.add(Subject(
+            semester_id=semester_id,
+            code=" sec101 ",
+            name="Duplicate inserted outside API",
+        ))
+        with pytest.raises(IntegrityError):
+            constraint_db.commit()
+        constraint_db.rollback()
+
+        # NULL section assignments must also be unique when academic-year
+        # formatting differs, even when inserts bypass the API.
+        constraint_db.add(TeacherSubject(
+            teacher_id=teacher_id, subject_id=created_subject.json()["id"],
+            section_id=None, academic_year="2027-28",
+        ))
+        constraint_db.commit()
+        constraint_db.add(TeacherSubject(
+            teacher_id=teacher_id, subject_id=created_subject.json()["id"],
+            section_id=None, academic_year=" 2027-28 ",
+        ))
+        with pytest.raises(IntegrityError):
+            constraint_db.commit()
+        constraint_db.rollback()
+
+        constraint_db.add(Enrollment(
+            student_id=student_id, subject_id=created_subject.json()["id"],
+            section_id=None, academic_year="2027-28",
+        ))
+        constraint_db.commit()
+        constraint_db.add(Enrollment(
+            student_id=student_id, subject_id=created_subject.json()["id"],
+            section_id=None, academic_year=" 2027-28 ",
+        ))
+        with pytest.raises(IntegrityError):
+            constraint_db.commit()
+        constraint_db.rollback()
+        constraint_db.close()
+
+        # API-level duplicate checks should normalize year whitespace/case too.
+        assignment_payload = {
+            "teacher_id": teacher_id,
+            "subject_id": created_subject.json()["id"],
+            "academic_year": "2026-27",
+        }
+        first_assignment = client.post("/api/assignments", headers=admin_headers, json=assignment_payload)
+        assert first_assignment.status_code == 200, first_assignment.text
+        duplicate_assignment = client.post(
+            "/api/assignments", headers=admin_headers,
+            json={**assignment_payload, "academic_year": " 2026-27 "},
+        )
+        assert duplicate_assignment.status_code == 409, duplicate_assignment.text
+
+        enrollment_payload = {
+            "student_id": student_id,
+            "subject_id": created_subject.json()["id"],
+            "academic_year": "2026-27",
+        }
+        first_enrollment = client.post("/api/enrollments", headers=admin_headers, json=enrollment_payload)
+        assert first_enrollment.status_code == 200, first_enrollment.text
+        duplicate_enrollment = client.post(
+            "/api/enrollments", headers=admin_headers,
+            json={**enrollment_payload, "academic_year": " 2026-27 "},
+        )
+        assert duplicate_enrollment.status_code == 409, duplicate_enrollment.text
 
     app.dependency_overrides.clear()
     engine.dispose()
