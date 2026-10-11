@@ -267,16 +267,22 @@ def update_topic(topic_id:int,p:TopicUpdate,db:Session=Depends(get_db),u=Depends
 @router.post("/resources")
 async def upload_resource(subject_id:int,title:str|None=None,resource_type:str="REFERENCE",file:UploadFile=File(...),db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
-    data=await file.read()
+    filename=(file.filename or "").strip()
+    if not filename or len(filename)>255:raise HTTPException(400,"A valid filename is required")
+    normalized_title=(title or filename).strip()
+    if not normalized_title or len(normalized_title)>200:raise HTTPException(400,"Title must be between 1 and 200 characters")
+    normalized_type=resource_type.strip().upper()
+    if not normalized_type or len(normalized_type)>50:raise HTTPException(400,"A valid resource type is required")
     allowed={"pdf","docx","pptx","txt","md","csv","json","py","java","js","ts","html","css"}
-    ext=file.filename.lower().rsplit(".",1)[-1] if "." in file.filename else ""
+    ext=filename.lower().rsplit(".",1)[-1] if "." in filename else ""
     if ext not in allowed:raise HTTPException(415,"Unsupported file type")
+    data=await file.read(20*1024*1024+1)
     if len(data)>20*1024*1024:raise HTTPException(413,"Maximum file size is 20 MB")
-    safe_filename=re.sub(r"[^a-zA-Z0-9._-]", "_", file.filename)
+    safe_filename=re.sub(r"[^a-zA-Z0-9._-]", "_", filename)
     key=f"subjects/{subject_id}/resources/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex}_{u.id}_{safe_filename}"
-    text,pages=extract_text(file.filename,data);text=normalize_text(text);chunks,pages=extract_chunks(file.filename,data);stored=put_object(key,data,file.content_type or "application/octet-stream")
+    text,pages=extract_text(filename,data);text=normalize_text(text);chunks,pages=extract_chunks(filename,data);stored=put_object(key,data,file.content_type or "application/octet-stream")
     if not stored:raise HTTPException(503,"Object storage is unavailable; resource was not saved")
-    x=Resource(subject_id=subject_id,uploaded_by=u.id,title=title or file.filename,resource_type=resource_type,storage_key=key,status="DRAFT",extracted_text=text,page_count=pages);db.add(x);db.flush()
+    x=Resource(subject_id=subject_id,uploaded_by=u.id,title=normalized_title,resource_type=normalized_type,storage_key=key,status="DRAFT",extracted_text=text,page_count=pages);db.add(x);db.flush()
     for i,ch in enumerate(chunks):db.add(ResourceChunk(resource_id=x.id,subject_id=subject_id,chunk_index=i,text=ch['text'],page_number=ch.get('page'),section=ch.get('section'),qdrant_point_id=str(int(__import__('hashlib').sha1(f'{x.id}:{i}'.encode()).hexdigest()[:15],16))))
     vectorized=upsert_chunks(x.id,subject_id,chunks,x.title)
     audit(db,u,"UPLOAD_RESOURCE","RESOURCE",x.id,json.dumps({"key":key,"bytes":len(data),"stored":stored,"chunks":len(chunks),"vectorized":bool(vectorized)}));db.commit();return {"id":x.id,"storage_key":key,"status":"DRAFT","bytes":len(data),"extracted_chars":len(text),"pages":pages,"chunks":len(chunks),"vectorized":bool(vectorized),"stored":stored}
