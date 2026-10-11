@@ -21,49 +21,49 @@ router = APIRouter(prefix="/api")
 
 
 class SyllabusCompareRequest(BaseModel):
-    subject_id: int
-    version: int | None = None
-    topic_names: list[str]
-    source_resource_id: int | None = None
+    subject_id: int = Field(ge=1)
+    version: int | None = Field(default=None, ge=1)
+    topic_names: list[str] = Field(min_length=1, max_length=500)
+    source_resource_id: int | None = Field(default=None, ge=1)
 
 
 class PlanEdit(BaseModel):
-    action: str
-    topic_id: int
-    value: float | None = None
-    new_week: int | None = None
-    note: str | None = None
+    action: str = Field(min_length=1, max_length=30)
+    topic_id: int = Field(ge=1)
+    value: float | None = Field(default=None, allow_inf_nan=False)
+    new_week: int | None = Field(default=None, ge=1)
+    note: str | None = Field(default=None, max_length=2000)
 
 
 class PYQQuestionInput(BaseModel):
     year: int | None = Field(default=None, ge=1900, le=2100)
     question_no: str | None = Field(default=None, max_length=30)
-    question_text: str = Field(min_length=1)
+    question_text: str = Field(min_length=1, max_length=20000)
     marks: float = Field(default=1.0, gt=0, allow_inf_nan=False)
 
 
 class PYQBulkRequest(BaseModel):
     subject_id: int = Field(ge=1)
     resource_id: int | None = Field(default=None, ge=1)
-    questions: list[PYQQuestionInput]
+    questions: list[PYQQuestionInput] = Field(min_length=1, max_length=500)
 
 
 class AssignmentSubmit(BaseModel):
-    content_id: int
-    answer_text: str
+    content_id: int = Field(ge=1)
+    answer_text: str = Field(min_length=1, max_length=100000)
 
 
 class GenerateRequest(BaseModel):
-    subject_id: int
-    topic_id: int | None = None
-    content_type: str
-    title: str | None = None
-    instructions: str | None = None
+    subject_id: int = Field(ge=1)
+    topic_id: int | None = Field(default=None, ge=1)
+    content_type: str = Field(min_length=1, max_length=50)
+    title: str | None = Field(default=None, max_length=200)
+    instructions: str | None = Field(default=None, max_length=10000)
 
 
 class GradeSubmission(BaseModel):
-    score: float
-    feedback: str | None = None
+    score: float = Field(ge=0, allow_inf_nan=False)
+    feedback: str | None = Field(default=None, max_length=5000)
 
 
 class ContentUpdate(BaseModel):
@@ -73,7 +73,7 @@ class ContentUpdate(BaseModel):
 
 
 class ContentStatusUpdate(BaseModel):
-    status: str
+    status: str = Field(min_length=1, max_length=20)
 
 
 class DepartmentCreate(BaseModel):
