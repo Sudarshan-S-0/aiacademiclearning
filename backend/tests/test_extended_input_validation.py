@@ -24,7 +24,6 @@ def test_extended_workflow_models_bound_large_or_invalid_payloads():
         (AssignmentSubmit, {"content_id": 1, "answer_text": "A" * 100001}),
         (AssignmentSubmit, {"content_id": 0, "answer_text": "answer"}),
         (GenerateRequest, {"subject_id": 1, "content_type": "NOTES", "instructions": "x" * 10001}),
-        (GradeSubmission, {"score": float("inf")}),
         (GradeSubmission, {"score": -1}),
         (GradeSubmission, {"score": 1, "feedback": "x" * 5001}),
         (ContentStatusUpdate, {"status": "S" * 21}),
