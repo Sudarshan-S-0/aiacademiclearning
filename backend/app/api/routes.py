@@ -22,7 +22,7 @@ class AssignmentCreate(BaseModel): teacher_id:int;subject_id:int;section_id:int|
 class EnrollmentCreate(BaseModel): student_id:int;subject_id:int;section_id:int|None=None;academic_year:str
 class TopicCreate(BaseModel): subject_id:int;unit_number:int=Field(ge=1);topic_name:str=Field(min_length=1);sequence_order:int=Field(ge=1);estimated_hours:float=Field(default=1,gt=0,allow_inf_nan=False)
 class TopicUpdate(BaseModel): sequence_order:int|None=Field(default=None,ge=1);estimated_hours:float|None=Field(default=None,gt=0,allow_inf_nan=False);completed:bool|None=None;status:Literal["ACTIVE","ARCHIVED"]|None=None
-class ContentCreate(BaseModel): subject_id:int;topic_id:int|None=None;title:str;content_type:str;body:str;source_reference:str|None=None;generated_by_ai:bool=False
+class ContentCreate(BaseModel): subject_id:int;topic_id:int|None=None;title:str=Field(min_length=1,max_length=200);content_type:str=Field(min_length=1,max_length=50);body:str=Field(min_length=1,max_length=100000);source_reference:str|None=Field(default=None,max_length=2048);generated_by_ai:bool=False
 class PublishAction(BaseModel): status:str
 class PYQCreate(BaseModel): subject_id:int=Field(ge=1);year:int|None=Field(default=None,ge=1900,le=2100);question_no:str|None=None;question_text:str=Field(min_length=1);marks:float=Field(default=1,gt=0,allow_inf_nan=False);topic_id:int|None=Field(default=None,ge=1);unit_number:int|None=Field(default=None,ge=1)
 class PlanAction(BaseModel): action:str;topic_id:int;value:float|int|None=None;new_week:int|None=None;note:str|None=None
@@ -354,11 +354,16 @@ def syllabus_versions(subject_id:int,db:Session=Depends(get_db),u=Depends(curren
 @router.post("/content")
 def create_content(p:ContentCreate,db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
+    title=p.title.strip()
+    content_type=p.content_type.strip().upper()
+    body=p.body.strip()
+    if not title or not content_type or not body:
+        raise HTTPException(400,"Title, content type, and body are required")
     if p.topic_id is not None:
         topic=db.get(Topic,p.topic_id)
         if not topic or topic.subject_id != p.subject_id or topic.status != "ACTIVE":
             raise HTTPException(400,"topic_id must belong to the requested subject and be active")
-    x=Content(**p.model_dump(),status="IN_REVIEW",created_by=u.id);db.add(x);db.flush();audit(db,u,"CREATE_CONTENT","CONTENT",x.id);db.commit();return {"id":x.id,"status":x.status}
+    x=Content(**{**p.model_dump(),"title":title,"content_type":content_type,"body":body},status="IN_REVIEW",created_by=u.id);db.add(x);db.flush();audit(db,u,"CREATE_CONTENT","CONTENT",x.id);db.commit();return {"id":x.id,"status":x.status}
 @router.post("/ai/ask")
 def ask_ai(p:AskRequest,db:Session=Depends(get_db),u=Depends(current_user)):
     if not can_access_subject(db,u,p.subject_id):raise HTTPException(403,"Subject access denied")
