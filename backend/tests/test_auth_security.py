@@ -50,3 +50,23 @@ def test_user_create_schema_trims_names_and_rejects_blank_or_oversized_names():
                 password="StrongPass123",
                 role="STUDENT",
             )
+
+def test_user_password_schema_rejects_passwords_over_bcrypt_byte_limit():
+    import pytest
+    from pydantic import ValidationError
+    from app.api.routes import Login, UserCreate
+
+    base = {
+        "full_name": "Test User",
+        "email": "password-limit@example.com",
+        "role": "STUDENT",
+    }
+    for password in ("A" * 73, "é" * 37):
+        with pytest.raises(ValidationError):
+            UserCreate(**base, password=password)
+        with pytest.raises(ValidationError):
+            Login(email=base["email"], password=password)
+
+    assert UserCreate(**base, password="A" * 72).password == "A" * 72
+    assert Login(email=base["email"], password="A" * 72).password == "A" * 72
+
