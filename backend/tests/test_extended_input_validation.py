@@ -19,6 +19,7 @@ def test_extended_workflow_models_bound_large_or_invalid_payloads():
 
     invalid_models = [
         (PYQQuestionInput, {"question_text": "Q" * 20001}),
+        (PYQQuestionInput, {"question_text": "Question", "marks": 101}),
         (PYQBulkRequest, {"subject_id": 1, "questions": [valid_question] * 501}),
         (PYQBulkRequest, {"subject_id": 1, "questions": []}),
         (AssignmentSubmit, {"content_id": 1, "answer_text": "A" * 100001}),
@@ -28,6 +29,7 @@ def test_extended_workflow_models_bound_large_or_invalid_payloads():
         (ContentStatusUpdate, {"status": "S" * 21}),
         (SyllabusCompareRequest, {"subject_id": 1, "topic_names": ["topic"] * 501}),
         (PlanEdit, {"action": "UPDATE", "topic_id": 1, "value": float("nan")}),
+        (PlanEdit, {"action": "MOVE", "topic_id": 1, "new_week": 101}),
     ]
     for model, payload in invalid_models:
         with pytest.raises(ValidationError):
