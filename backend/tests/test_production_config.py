@@ -40,6 +40,8 @@ def test_production_settings_accept_explicit_secure_values():
         "https://academic.example.com/path",
         "https://*.example.com",
         "https://user:pass@academic.example.com",
+        "https://academic.example.com:notaport",
+        "https://academic.example.com:99999",
     ],
 )
 def test_production_settings_reject_malformed_or_insecure_origins(origin):
