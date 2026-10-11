@@ -425,3 +425,35 @@ def test_malformed_ai_quiz_payload_returns_gateway_error_without_deleting_questi
     detail = test_client.get(f"/api/quizzes/{quiz_id}", headers=headers)
     assert detail.status_code == 200, detail.text
     assert [item["id"] for item in detail.json()["questions"]] == [question_id]
+
+
+
+def test_quiz_creation_rejects_blank_or_oversized_titles_and_invalid_durations(client):
+    test_client, subject_id = client
+    admin_headers = login(test_client, "quiz-admin@example.com", "Admin@123")
+
+    for payload in (
+        {"title": "   ", "duration_minutes": 30},
+        {"title": "Q" * 201, "duration_minutes": 30},
+        {"title": "Invalid duration", "duration_minutes": 0},
+        {"title": "Invalid duration", "duration_minutes": 601},
+    ):
+        response = test_client.post(
+            "/api/quizzes",
+            headers=admin_headers,
+            json={"subject_id": subject_id, **payload},
+        )
+        assert response.status_code == 422, response.text
+
+    valid = test_client.post(
+        "/api/quizzes",
+        headers=admin_headers,
+        json={"subject_id": subject_id, "title": "  Valid Quiz  ", "duration_minutes": 45},
+    )
+    assert valid.status_code == 200, valid.text
+    detail = test_client.get(
+        f"/api/quizzes/{valid.json()['id']}",
+        headers=admin_headers,
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["title"] == "Valid Quiz"
