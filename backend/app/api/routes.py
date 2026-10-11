@@ -19,12 +19,29 @@ def safe_download_filename(value, fallback="download"):
     # Response headers must not accept control characters or path separators.
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "")).strip("._")[:150]
     return name or fallback
-class Login(BaseModel): email:EmailStr;password:str
+class Login(BaseModel):
+    email:EmailStr
+    password:str=Field(min_length=1, max_length=72)
+
+    @field_validator("password", mode="before")
+    @classmethod
+    def validate_login_password_bytes(cls, value):
+        if isinstance(value, str) and len(value.encode("utf-8")) > 72:
+            raise ValueError("password must not exceed 72 UTF-8 bytes")
+        return value
+
 class UserCreate(BaseModel):
     full_name:str=Field(min_length=2,max_length=200)
     email:EmailStr
-    password:str=Field(min_length=8)
+    password:str=Field(min_length=8, max_length=72)
     role:str
+
+    @field_validator("password", mode="before")
+    @classmethod
+    def validate_password_bytes(cls, value):
+        if isinstance(value, str) and len(value.encode("utf-8")) > 72:
+            raise ValueError("password must not exceed 72 UTF-8 bytes")
+        return value
 
     @field_validator("full_name", mode="before")
     @classmethod
