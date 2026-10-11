@@ -397,7 +397,7 @@ async def upload_resource_v2(subject_id: int, title: str, resource_type: str = "
                              u=Depends(require_roles("ADMIN", "TEACHER"))):
     if not can_access_subject(db, u, subject_id):
         raise HTTPException(403, "Subject access denied")
-    filename = (filename or "").strip()
+    filename = (file.filename or "").strip()
     if not filename or len(filename) > 255:
         raise HTTPException(400, "A valid filename is required")
     title = title.strip()
