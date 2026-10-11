@@ -62,7 +62,9 @@ class GenerateRequest(BaseModel):
 
 
 class GradeSubmission(BaseModel):
-    score: float = Field(ge=0, allow_inf_nan=False)
+    # Keep non-finite values available to the endpoint guard so they produce a
+    # controlled 400 response rather than a validation error containing NaN.
+    score: float
     feedback: str | None = Field(default=None, max_length=5000)
 
 
