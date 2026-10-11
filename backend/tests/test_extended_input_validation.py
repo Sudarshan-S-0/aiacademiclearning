@@ -28,6 +28,9 @@ def test_extended_workflow_models_bound_large_or_invalid_payloads():
         (GradeSubmission, {"score": 1, "feedback": "x" * 5001}),
         (ContentStatusUpdate, {"status": "S" * 21}),
         (SyllabusCompareRequest, {"subject_id": 1, "topic_names": ["topic"] * 501}),
+        (SyllabusCompareRequest, {"subject_id": 1, "topic_names": ["T" * 201]}),
+        (SyllabusCompareRequest, {"subject_id": 1, "topic_names": [" "]}),
+        (PlanEdit, {"action": "duration", "topic_id": 1, "value": 1001}),
         (PlanEdit, {"action": "UPDATE", "topic_id": 1, "value": float("nan")}),
         (PlanEdit, {"action": "MOVE", "topic_id": 1, "new_week": 101}),
     ]
