@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.db.session import get_db
 from app.models.models import *
-from app.api.routes import current_user, require_roles, can_access_subject, audit
+from app.api.routes import current_user, require_roles, can_access_subject, audit, safe_download_filename
 from app.services.document import extract_sections, extract_text, chunk_text
 from app.services.qdrant import upsert_chunks, search_chunks, set_resource_status
 from app.services.ai import grounded_answer, generate_structured, APPROVED_RESOURCE_MESSAGE
@@ -729,8 +729,9 @@ def download_artifact(artifact_id: int, db: Session = Depends(get_db), u=Depends
     if data is None:
         raise HTTPException(404, "Artifact unavailable")
     from fastapi.responses import Response
+    filename = safe_download_filename(f"{a.title}.pptx", f"artifact-{a.id}.pptx")
     return Response(data, media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                    headers={"Content-Disposition": f'attachment; filename="{a.title}.pptx"'})
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @router.post("/ai/ask-v2")
