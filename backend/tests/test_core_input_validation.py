@@ -17,6 +17,7 @@ from app.api.routes import (
     PYQCreate,
     SubjectCreate,
     TopicCreate,
+    TopicUpdate,
 )
 
 
@@ -28,6 +29,8 @@ from app.api.routes import (
         (EnrollmentCreate, {"student_id": 1, "subject_id": 0, "academic_year": "2026-27"}),
         (SubjectCreate, {"semester_id": 1, "code": "CS", "name": "Computer Science", "description": "x" * 5001}),
         (TopicCreate, {"subject_id": 1, "unit_number": 1, "topic_name": "T" * 201, "sequence_order": 1}),
+        (TopicUpdate, {"sequence_order": 10001}),
+        (TopicUpdate, {"estimated_hours": 1001}),
         (ContentCreate, {"subject_id": 0, "title": "Notes", "content_type": "NOTES", "body": "body"}),
         (PYQCreate, {"subject_id": 1, "question_text": "Q" * 20001}),
         (PYQCreate, {"subject_id": 1, "question_text": "Question", "marks": float("inf")}),
