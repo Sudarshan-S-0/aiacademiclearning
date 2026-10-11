@@ -43,7 +43,20 @@ class ContentCreate(BaseModel): subject_id:int;topic_id:int|None=None;title:str=
 class PublishAction(BaseModel): status:str
 class PYQCreate(BaseModel): subject_id:int=Field(ge=1);year:int|None=Field(default=None,ge=1900,le=2100);question_no:str|None=None;question_text:str=Field(min_length=1);marks:float=Field(default=1,gt=0,allow_inf_nan=False);topic_id:int|None=Field(default=None,ge=1);unit_number:int|None=Field(default=None,ge=1)
 class PlanAction(BaseModel): action:str;topic_id:int;value:float|int|None=None;new_week:int|None=None;note:str|None=None
-class QuizCreate(BaseModel): subject_id:int;title:str;duration_minutes:int=30;status:str="DRAFT"
+class QuizCreate(BaseModel):
+    subject_id:int=Field(ge=1)
+    title:str=Field(min_length=1,max_length=200)
+    duration_minutes:int=Field(default=30,ge=1,le=600)
+    status:str="DRAFT"
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def normalize_quiz_title(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                raise ValueError("title must not be blank")
+        return value
 class QuizQuestionCreate(BaseModel): topic_id:int|None=None;question_text:str;marks:int=1;correct_answer:str;options:list[str]|None=None
 class Answer(BaseModel): question_id:int;answer:str
 class AttemptCreate(BaseModel): quiz_id:int;answers:list[Answer]
