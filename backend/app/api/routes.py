@@ -3,7 +3,7 @@ from typing import Literal
 import json,re,jwt,uuid
 from fastapi import APIRouter,Depends,HTTPException,UploadFile,File,Header,Query
 from passlib.context import CryptContext
-from pydantic import BaseModel,EmailStr,Field
+from pydantic import BaseModel,EmailStr,Field,field_validator
 from sqlalchemy import select,func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -20,7 +20,20 @@ def safe_download_filename(value, fallback="download"):
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "")).strip("._")[:150]
     return name or fallback
 class Login(BaseModel): email:EmailStr;password:str
-class UserCreate(BaseModel): full_name:str=Field(min_length=2);email:EmailStr;password:str=Field(min_length=8);role:str
+class UserCreate(BaseModel):
+    full_name:str=Field(min_length=2,max_length=200)
+    email:EmailStr
+    password:str=Field(min_length=8)
+    role:str
+
+    @field_validator("full_name", mode="before")
+    @classmethod
+    def normalize_full_name(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                raise ValueError("full_name must not be blank")
+        return value
 class SubjectCreate(BaseModel): semester_id:int=Field(ge=1);code:str=Field(min_length=1,max_length=30);name:str=Field(min_length=1,max_length=200);description:str|None=None;weeks:int=Field(default=16,ge=1);hours_per_week:int=Field(default=4,gt=0);lecture_duration_minutes:int=Field(default=60,gt=0)
 class AssignmentCreate(BaseModel): teacher_id:int;subject_id:int;section_id:int|None=None;academic_year:str
 class EnrollmentCreate(BaseModel): student_id:int;subject_id:int;section_id:int|None=None;academic_year:str
