@@ -1,5 +1,7 @@
 from time import monotonic
+import math
 from fastapi import FastAPI,Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.core.config import settings
@@ -8,6 +10,32 @@ from app.api.extended_routes import router as extended_router
 
 # Database schema changes are managed by Alembic. Run `alembic upgrade head`
 # as a deployment step before starting the application.
+
+
+def _json_safe_validation_value(value):
+    """Make validation details JSON-safe even when the rejected input is NaN/Infinity."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return repr(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe_validation_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_validation_value(item) for item in value]
+    if isinstance(value, BaseException):
+        return str(value)
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error_handler(request: Request, exc: RequestValidationError):
+    # Pydantic may include the original invalid input in its error details.
+    # Non-finite floats are not valid JSON, so sanitize before serializing the 422.
+    return JSONResponse(
+        status_code=422,
+        content={"detail": _json_safe_validation_value(exc.errors())},
+    )
+
 
 app=FastAPI(title="AI Academic Teaching and Learning System",version="2.0.0")
 app.add_middleware(CORSMiddleware,allow_origins=[x.strip() for x in settings.cors_origins.split(',') if x.strip()],allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
