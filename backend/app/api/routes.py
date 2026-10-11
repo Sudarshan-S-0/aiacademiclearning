@@ -74,7 +74,19 @@ class QuizCreate(BaseModel):
             if not value:
                 raise ValueError("title must not be blank")
         return value
-class QuizQuestionCreate(BaseModel): topic_id:int|None=None;question_text:str;marks:int=1;correct_answer:str;options:list[str]|None=None
+class QuizQuestionCreate(BaseModel):
+    topic_id:int|None=Field(default=None,ge=1)
+    question_text:str=Field(min_length=1,max_length=5000)
+    marks:int=Field(default=1,ge=1,le=100)
+    correct_answer:str=Field(min_length=1,max_length=500)
+    options:list[str]|None=Field(default=None,max_length=4)
+
+    @field_validator("options")
+    @classmethod
+    def validate_option_lengths(cls, value):
+        if value is not None and any(len(option) > 500 for option in value):
+            raise ValueError("each option must not exceed 500 characters")
+        return value
 class Answer(BaseModel): question_id:int;answer:str
 class AttemptCreate(BaseModel): quiz_id:int;answers:list[Answer]
 class AIContentRequest(BaseModel): subject_id:int;topic_id:int|None=None;content_type:str;title:str|None=None;instructions:str|None=None
