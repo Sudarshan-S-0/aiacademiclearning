@@ -12,9 +12,11 @@ async function upload(path:string,token:string,fields:Record<string,string>,file
 function Login({onLogin}:{onLogin:(t:string,u:User)=>void}){const[e,setE]=useState(import.meta.env.DEV?"student@example.com":""),[p,setP]=useState(import.meta.env.DEV?"Student@123":""),[err,setErr]=useState("");
 async function submit(ev:React.FormEvent){ev.preventDefault();try{const r=await fetch(API+"/auth/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:e,password:p})});const d=await r.json();if(!r.ok)throw Error(d.detail);localStorage.setItem("token",d.access_token);localStorage.setItem("user",JSON.stringify(d.user));onLogin(d.access_token,d.user)}catch(x:any){setErr(x.message)}}return <div className="login"><form className="login-card"onSubmit={submit}><div className="brand">AI Academic Learning</div><h1>Academic intelligence, controlled by teachers.</h1><p>Admin setup → Teacher resources → Grounded AI → Student learning.</p><label>Email<input value={e}onChange={x=>setE(x.target.value)}/></label><label>Password<input type="password"value={p}onChange={x=>setP(x.target.value)}/></label><button>Sign in</button>{err&&<div className="error">{err}</div>}{import.meta.env.DEV&&<small>Demo: admin@example.com / Admin@123 · teacher@example.com / Teacher@123 · student@example.com / Student@123</small>}</form></div>}
 
-function App(){const[token,setToken]=useState(localStorage.getItem("token")||""),[user,setUser]=useState<User|null>(JSON.parse(localStorage.getItem("user")||"null"));
+function readStoredUser():User|null{try{const raw=localStorage.getItem("user");if(!raw)return null;const value=JSON.parse(raw);if(value&&typeof value.id==="number"&&typeof value.name==="string"&&typeof value.role==="string")return value as User}catch{}return null}
+
+function App(){const[token,setToken]=useState(()=>localStorage.getItem("token")||""),[user,setUser]=useState<User|null>(()=>readStoredUser());
 if(!token||!user)return <Login onLogin={(t,u)=>{setToken(t);setUser(u)}}/>;
-return <Shell token={token}user={user}logout={()=>{localStorage.clear();setToken("");setUser(null)}}/>}
+return <Shell token={token}user={user}logout={()=>{localStorage.removeItem("token");localStorage.removeItem("user");setToken("");setUser(null)}}/>}
 
 function Shell({token,user,logout}:{token:string;user:User;logout:()=>void}){const[summary,setSummary]=useState<any>({}),[subjects,setSubjects]=useState<Subject[]>([]),[subjectId,setSubjectId]=useState<number>(),[tab,setTab]=useState("overview"),[notice,setNotice]=useState("");
 const load=async()=>{try{setSummary(await api("/dashboard/summary",token));const s=await api("/subjects",token);setSubjects(s);if(!subjectId&&s[0])setSubjectId(s[0].id)}catch(e:any){setNotice(e.message)}};
