@@ -52,6 +52,14 @@ def test_resource_ai_publication_gates(monkeypatch):
             assert me.status_code == 200, me.text
             return headers
         th=login("wf.teacher@example.com","Teacher@123")
+        blank_content=client.post("/api/content",headers=th,json={
+            "subject_id":subject_id,"title":"   ","content_type":"notes","body":"body"
+        })
+        assert blank_content.status_code==400, blank_content.text
+        oversized_content_title=client.post("/api/content",headers=th,json={
+            "subject_id":subject_id,"title":"T"*201,"content_type":"notes","body":"body"
+        })
+        assert oversized_content_title.status_code==422, oversized_content_title.text
         blocked=client.post("/api/ai/generate",headers=th,json={"subject_id":subject_id,"content_type":"notes","title":"Notes"})
         assert blocked.status_code==409
         approved=client.patch(f"/api/resources/{resource_id}/approve-v2",headers=th)
