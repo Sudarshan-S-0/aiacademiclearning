@@ -11,6 +11,8 @@ from app.api.extended_routes import router as extended_router
 # Database schema changes are managed by Alembic. Run `alembic upgrade head`
 # as a deployment step before starting the application.
 
+app=FastAPI(title="AI Academic Teaching and Learning System",version="2.0.0")
+
 
 def _json_safe_validation_value(value):
     """Make validation details JSON-safe even when the rejected input is NaN/Infinity."""
@@ -37,7 +39,6 @@ async def request_validation_error_handler(request: Request, exc: RequestValidat
     )
 
 
-app=FastAPI(title="AI Academic Teaching and Learning System",version="2.0.0")
 app.add_middleware(CORSMiddleware,allow_origins=[x.strip() for x in settings.cors_origins.split(',') if x.strip()],allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 
 # Process-local guardrail for authentication and AI endpoints. For multi-worker
