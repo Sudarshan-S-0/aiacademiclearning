@@ -51,15 +51,15 @@ class UserCreate(BaseModel):
             if not value:
                 raise ValueError("full_name must not be blank")
         return value
-class SubjectCreate(BaseModel): semester_id:int=Field(ge=1);code:str=Field(min_length=1,max_length=30);name:str=Field(min_length=1,max_length=200);description:str|None=None;weeks:int=Field(default=16,ge=1);hours_per_week:int=Field(default=4,gt=0);lecture_duration_minutes:int=Field(default=60,gt=0)
-class AssignmentCreate(BaseModel): teacher_id:int;subject_id:int;section_id:int|None=None;academic_year:str
-class EnrollmentCreate(BaseModel): student_id:int;subject_id:int;section_id:int|None=None;academic_year:str
-class TopicCreate(BaseModel): subject_id:int;unit_number:int=Field(ge=1);topic_name:str=Field(min_length=1);sequence_order:int=Field(ge=1);estimated_hours:float=Field(default=1,gt=0,allow_inf_nan=False)
+class SubjectCreate(BaseModel): semester_id:int=Field(ge=1);code:str=Field(min_length=1,max_length=30);name:str=Field(min_length=1,max_length=200);description:str|None=Field(default=None,max_length=5000);weeks:int=Field(default=16,ge=1,le=60);hours_per_week:int=Field(default=4,gt=0,le=80);lecture_duration_minutes:int=Field(default=60,gt=0,le=240)
+class AssignmentCreate(BaseModel): teacher_id:int=Field(ge=1);subject_id:int=Field(ge=1);section_id:int|None=Field(default=None,ge=1);academic_year:str=Field(min_length=1,max_length=20)
+class EnrollmentCreate(BaseModel): student_id:int=Field(ge=1);subject_id:int=Field(ge=1);section_id:int|None=Field(default=None,ge=1);academic_year:str=Field(min_length=1,max_length=20)
+class TopicCreate(BaseModel): subject_id:int=Field(ge=1);unit_number:int=Field(ge=1,le=100);topic_name:str=Field(min_length=1,max_length=200);sequence_order:int=Field(ge=1,le=10000);estimated_hours:float=Field(default=1,gt=0,le=1000,allow_inf_nan=False)
 class TopicUpdate(BaseModel): sequence_order:int|None=Field(default=None,ge=1);estimated_hours:float|None=Field(default=None,gt=0,allow_inf_nan=False);completed:bool|None=None;status:Literal["ACTIVE","ARCHIVED"]|None=None
-class ContentCreate(BaseModel): subject_id:int;topic_id:int|None=None;title:str=Field(min_length=1,max_length=200);content_type:str=Field(min_length=1,max_length=50);body:str=Field(min_length=1,max_length=100000);source_reference:str|None=Field(default=None,max_length=2048);generated_by_ai:bool=False
-class PublishAction(BaseModel): status:str
-class PYQCreate(BaseModel): subject_id:int=Field(ge=1);year:int|None=Field(default=None,ge=1900,le=2100);question_no:str|None=None;question_text:str=Field(min_length=1);marks:float=Field(default=1,gt=0,allow_inf_nan=False);topic_id:int|None=Field(default=None,ge=1);unit_number:int|None=Field(default=None,ge=1)
-class PlanAction(BaseModel): action:str;topic_id:int;value:float|int|None=None;new_week:int|None=None;note:str|None=None
+class ContentCreate(BaseModel): subject_id:int=Field(ge=1);topic_id:int|None=Field(default=None,ge=1);title:str=Field(min_length=1,max_length=200);content_type:str=Field(min_length=1,max_length=50);body:str=Field(min_length=1,max_length=100000);source_reference:str|None=Field(default=None,max_length=2048);generated_by_ai:bool=False
+class PublishAction(BaseModel): status:str=Field(min_length=1,max_length=20)
+class PYQCreate(BaseModel): subject_id:int=Field(ge=1);year:int|None=Field(default=None,ge=1900,le=2100);question_no:str|None=Field(default=None,max_length=30);question_text:str=Field(min_length=1,max_length=20000);marks:float=Field(default=1,gt=0,le=100,allow_inf_nan=False);topic_id:int|None=Field(default=None,ge=1);unit_number:int|None=Field(default=None,ge=1,le=100)
+class PlanAction(BaseModel): action:str=Field(min_length=1,max_length=30);topic_id:int=Field(ge=1);value:float|int|None=Field(default=None,allow_inf_nan=False);new_week:int|None=Field(default=None,ge=1,le=100);note:str|None=Field(default=None,max_length=2000)
 class QuizCreate(BaseModel):
     subject_id:int=Field(ge=1)
     title:str=Field(min_length=1,max_length=200)
@@ -87,11 +87,11 @@ class QuizQuestionCreate(BaseModel):
         if value is not None and any(len(option) > 500 for option in value):
             raise ValueError("each option must not exceed 500 characters")
         return value
-class Answer(BaseModel): question_id:int;answer:str
-class AttemptCreate(BaseModel): quiz_id:int;answers:list[Answer]
-class AIContentRequest(BaseModel): subject_id:int;topic_id:int|None=None;content_type:str;title:str|None=None;instructions:str|None=None
-class AIPlanRequest(BaseModel): subject_id:int
-class AskRequest(BaseModel): subject_id:int;question:str
+class Answer(BaseModel): question_id:int=Field(ge=1);answer:str=Field(min_length=1,max_length=5000)
+class AttemptCreate(BaseModel): quiz_id:int=Field(ge=1);answers:list[Answer]=Field(min_length=1,max_length=200)
+class AIContentRequest(BaseModel): subject_id:int=Field(ge=1);topic_id:int|None=Field(default=None,ge=1);content_type:str=Field(min_length=1,max_length=50);title:str|None=Field(default=None,max_length=200);instructions:str|None=Field(default=None,max_length=10000)
+class AIPlanRequest(BaseModel): subject_id:int=Field(ge=1)
+class AskRequest(BaseModel): subject_id:int=Field(ge=1);question:str=Field(min_length=1,max_length=10000)
 def token_for(u):return jwt.encode({"sub":str(u.id),"role":u.role,"exp":datetime.now(timezone.utc)+timedelta(hours=8)},settings.jwt_secret,algorithm="HS256")
 def current_user(authorization:str|None=Header(default=None),db:Session=Depends(get_db)):
     if not authorization or not authorization.startswith("Bearer "):
