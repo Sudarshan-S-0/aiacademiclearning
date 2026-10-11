@@ -29,8 +29,9 @@ def test_rate_limit_client_map_has_explicit_capacity():
 
 
 def test_download_filename_strips_header_control_characters_and_paths():
-    value = safe_download_filename('notes"\\r\\nX-Injected: yes/../../file.pdf')
-    assert "\\r" not in value and "\\n" not in value
+    malicious_title = 'notes"' + chr(13) + chr(10) + 'X-Injected: yes/../../file.pdf'
+    value = safe_download_filename(malicious_title)
+    assert chr(13) not in value and chr(10) not in value
     assert '"' not in value
-    assert "/" not in value and "\\\\" not in value
+    assert "/" not in value and chr(92) not in value
     assert value
