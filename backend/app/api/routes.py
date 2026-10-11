@@ -34,7 +34,7 @@ class UserCreate(BaseModel):
     full_name:str=Field(min_length=2,max_length=200)
     email:EmailStr
     password:str=Field(min_length=8, max_length=72)
-    role:str
+    role:str=Field(min_length=1,max_length=20)
 
     @field_validator("password", mode="before")
     @classmethod
@@ -361,7 +361,7 @@ def resources(subject_id:int,db:Session=Depends(get_db),u=Depends(current_user))
     rows = db.scalars(resource_query.order_by(Resource.id.desc())).all()
     return [{"id":r.id,"title":r.title,"type":r.resource_type,"status":r.status,"version":r.version,"pages":r.page_count,"chars":len(r.extracted_text or "")} for r in rows]
 @router.patch("/resources/{resource_id}/status")
-def resource_status(resource_id:int,status:str=Query(...),db:Session=Depends(get_db),u=Depends(require_roles("ADMIN","TEACHER"))):
+def resource_status(resource_id:int,status:str=Query(..., min_length=1, max_length=20),db:Session=Depends(get_db),u=Depends(require_roles("ADMIN","TEACHER"))):
     x=db.get(Resource,resource_id)
     if not x or not can_access_subject(db,u,x.subject_id):raise HTTPException(404,"Resource not found")
     if status not in {"DRAFT","APPROVED","ARCHIVED"}:raise HTTPException(400,"Invalid resource status")
@@ -399,7 +399,7 @@ def download_resource(resource_id:int,db:Session=Depends(get_db),u=Depends(curre
     filename=safe_download_filename(x.title,f"resource-{x.id}")
     return Response(data,media_type="application/octet-stream",headers={"Content-Disposition":f'attachment; filename="{filename}"'})
 @router.post("/syllabus/versions")
-def syllabus_version(subject_id:int,resource_id:int|None=None,summary:str|None=None,db:Session=Depends(get_db),u=Depends(require_roles("ADMIN","TEACHER"))):
+def syllabus_version(subject_id:int,resource_id:int|None=None,summary:str|None=Query(default=None, max_length=10000),db:Session=Depends(get_db),u=Depends(require_roles("ADMIN","TEACHER"))):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
     if resource_id is not None:
         resource=db.get(Resource,resource_id)
@@ -674,7 +674,7 @@ def add_quiz_question(quiz_id:int,p:QuizQuestionCreate,db:Session=Depends(get_db
         if not topic or topic.subject_id != qz.subject_id or topic.status != "ACTIVE":raise HTTPException(400,"topic_id must belong to the quiz subject and be active")
     q=QuizQuestion(quiz_id=quiz_id,topic_id=p.topic_id,question_text=p.question_text.strip(),marks=p.marks,correct_answer=correct_answer,options_json=json.dumps(options));db.add(q);db.flush();audit(db,u,"ADD_QUIZ_QUESTION","QUIZ_QUESTION",q.id);db.commit();return {"id":q.id}
 @router.patch("/quizzes/{quiz_id}/status")
-def quiz_status(quiz_id:int,status:str=Query(...),db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
+def quiz_status(quiz_id:int,status:str=Query(..., min_length=1, max_length=20),db:Session=Depends(get_db),u=Depends(require_roles("TEACHER","ADMIN"))):
     q=db.get(Quiz,quiz_id)
     if not q or not can_access_subject(db,u,q.subject_id):raise HTTPException(404,"Quiz not found")
     if status not in {"DRAFT","PUBLISHED","ARCHIVED"}:raise HTTPException(400,"Invalid quiz status")
