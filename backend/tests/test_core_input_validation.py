@@ -1,6 +1,10 @@
+import json
+import math
+
 import pytest
 from pydantic import ValidationError
 
+from app.main import _json_safe_validation_value
 from app.api.routes import (
     AIContentRequest,
     Answer,
@@ -48,3 +52,13 @@ def test_core_academic_request_models_accept_valid_minimal_inputs():
     assert AttemptCreate(quiz_id=1, answers=[{"question_id": 1, "answer": "A"}])
     assert AIContentRequest(subject_id=1, content_type="NOTES")
     assert AskRequest(subject_id=1, question="Explain arrays")
+
+
+
+def test_validation_error_payloads_are_json_safe_for_non_finite_values():
+    sanitized = _json_safe_validation_value(
+        {"detail": [{"input": float("nan")}, {"input": float("inf")}, {"input": float("-inf")}]}
+    )
+    encoded = json.dumps(sanitized, allow_nan=False)
+    assert "nan" in encoded
+    assert "inf" in encoded
