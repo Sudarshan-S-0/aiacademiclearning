@@ -15,6 +15,10 @@ from app.services.document import extract_text,normalize_text,chunk_text,extract
 from app.services.storage import put_object,get_object
 from app.services.qdrant import upsert_chunks,search_chunks
 router=APIRouter(prefix="/api");pwd=CryptContext(schemes=["bcrypt"],deprecated="auto")
+def safe_download_filename(value, fallback="download"):
+    # Response headers must not accept control characters or path separators.
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "")).strip("._")[:150]
+    return name or fallback
 class Login(BaseModel): email:EmailStr;password:str
 class UserCreate(BaseModel): full_name:str=Field(min_length=2);email:EmailStr;password:str=Field(min_length=8);role:str
 class SubjectCreate(BaseModel): semester_id:int=Field(ge=1);code:str=Field(min_length=1,max_length=30);name:str=Field(min_length=1,max_length=200);description:str|None=None;weeks:int=Field(default=16,ge=1);hours_per_week:int=Field(default=4,gt=0);lecture_duration_minutes:int=Field(default=60,gt=0)
@@ -337,7 +341,8 @@ def download_resource(resource_id:int,db:Session=Depends(get_db),u=Depends(curre
     if u.role=="STUDENT" and x.status!="APPROVED":raise HTTPException(403,"Resource not published to students")
     data=get_object(x.storage_key or "")
     if data is None:raise HTTPException(404,"Stored file not available")
-    return Response(data,media_type="application/octet-stream",headers={"Content-Disposition":f'attachment; filename="{x.title}"'})
+    filename=safe_download_filename(x.title,f"resource-{x.id}")
+    return Response(data,media_type="application/octet-stream",headers={"Content-Disposition":f'attachment; filename="{filename}"'})
 @router.post("/syllabus/versions")
 def syllabus_version(subject_id:int,resource_id:int|None=None,summary:str|None=None,db:Session=Depends(get_db),u=Depends(require_roles("ADMIN","TEACHER"))):
     if not can_access_subject(db,u,subject_id):raise HTTPException(403,"Subject access denied")
