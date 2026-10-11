@@ -1,4 +1,5 @@
 from app import main as app_main
+from app.api.routes import safe_download_filename
 
 
 def test_rate_limit_pruning_removes_expired_client_keys():
@@ -25,3 +26,11 @@ def test_rate_limit_client_map_has_explicit_capacity():
     assert app_main._RATE_LIMIT_MAX_CLIENTS > 0
     assert app_main._RATE_LIMIT_MAX_REQUESTS > 0
     assert app_main._RATE_LIMIT_WINDOW_SECONDS > 0
+
+
+def test_download_filename_strips_header_control_characters_and_paths():
+    value = safe_download_filename('notes"\\r\\nX-Injected: yes/../../file.pdf')
+    assert "\\r" not in value and "\\n" not in value
+    assert '"' not in value
+    assert "/" not in value and "\\\\" not in value
+    assert value
