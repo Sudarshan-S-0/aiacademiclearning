@@ -35,8 +35,15 @@ class Settings(BaseSettings):
         origins = [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
         invalid_origins = []
         for origin in origins:
-            parsed = urlsplit(origin)
-            hostname = (parsed.hostname or "").lower()
+            try:
+                parsed = urlsplit(origin)
+                hostname = (parsed.hostname or "").lower()
+                # Accessing .port validates that any explicit port is numeric
+                # and within the valid TCP port range.
+                port = parsed.port
+            except ValueError:
+                invalid_origins.append(origin)
+                continue
             if (
                 parsed.scheme != "https"
                 or not hostname
