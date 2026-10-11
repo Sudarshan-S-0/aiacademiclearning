@@ -18,6 +18,7 @@ from app.api.routes import (
     SubjectCreate,
     TopicCreate,
     TopicUpdate,
+    UserCreate,
 )
 
 
@@ -25,6 +26,7 @@ from app.api.routes import (
     ("model", "payload"),
     [
         (AssignmentCreate, {"teacher_id": 0, "subject_id": 1, "academic_year": "2026-27"}),
+        (UserCreate, {"full_name": "Test User", "email": "test@example.com", "password": "Password123", "role": "R" * 21}),
         (AssignmentCreate, {"teacher_id": 1, "subject_id": 1, "academic_year": "x" * 21}),
         (EnrollmentCreate, {"student_id": 1, "subject_id": 0, "academic_year": "2026-27"}),
         (SubjectCreate, {"semester_id": 1, "code": "CS", "name": "Computer Science", "description": "x" * 5001}),
