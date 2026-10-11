@@ -39,7 +39,7 @@ class PlanEdit(BaseModel):
     topic_id: int = Field(ge=1)
     value: float | None = Field(default=None, gt=0, le=1000, allow_inf_nan=False)
     new_week: int | None = Field(default=None, ge=1, le=100)
-    note: str | None = Field(default=None, max_length=2000)
+    note: str | None = Field(default=None, max_length=200)
 
 
 class PYQQuestionInput(BaseModel):
