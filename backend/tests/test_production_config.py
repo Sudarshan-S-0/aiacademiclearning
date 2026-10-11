@@ -30,3 +30,27 @@ def test_production_settings_accept_explicit_secure_values():
 
     assert settings.environment == "production"
     assert settings.cors_origins == "https://academic.example.com"
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "not-a-url",
+        "http://academic.example.com",
+        "https://academic.example.com/path",
+        "https://*.example.com",
+        "https://user:pass@academic.example.com",
+    ],
+)
+def test_production_settings_reject_malformed_or_insecure_origins(origin):
+    with pytest.raises(ValidationError, match="Invalid production configuration"):
+        Settings(
+            environment="production",
+            database_url="postgresql+psycopg://app:secure-password@db.internal:5432/academic",
+            cors_origins=origin,
+            jwt_secret="a-unique-production-secret-with-more-than-32-chars",
+            minio_endpoint="minio.internal:9000",
+            minio_access_key="academic-service",
+            minio_secret_key="a-unique-object-storage-secret",
+            minio_secure=True,
+        )
