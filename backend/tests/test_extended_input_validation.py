@@ -31,6 +31,7 @@ def test_extended_workflow_models_bound_large_or_invalid_payloads():
         (SyllabusCompareRequest, {"subject_id": 1, "topic_names": ["T" * 201]}),
         (SyllabusCompareRequest, {"subject_id": 1, "topic_names": [" "]}),
         (PlanEdit, {"action": "duration", "topic_id": 1, "value": 1001}),
+        (PlanEdit, {"action": "SPLIT", "topic_id": 1, "note": "T" * 201}),
         (PlanEdit, {"action": "UPDATE", "topic_id": 1, "value": float("nan")}),
         (PlanEdit, {"action": "MOVE", "topic_id": 1, "new_week": 101}),
     ]
