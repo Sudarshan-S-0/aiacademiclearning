@@ -327,3 +327,36 @@ def test_content_creation_rejects_topic_from_another_subject(client):
         },
     )
     assert response.status_code == 400
+
+
+def test_content_update_rejects_oversized_fields(client):
+    test_client, subject_id = client
+    admin_headers = login(test_client, "content-admin@example.com", "Admin@123")
+
+    session = next(app.dependency_overrides[get_db]())
+    try:
+        content = Content(
+            subject_id=subject_id,
+            title="Bounded Update",
+            content_type="NOTES",
+            body="Existing body",
+            status="DRAFT",
+            version=1,
+        )
+        session.add(content)
+        session.commit()
+        content_id = content.id
+    finally:
+        session.close()
+
+    for payload in (
+        {"title": "T" * 201},
+        {"body": "B" * 100001},
+        {"source_reference": "R" * 2049},
+    ):
+        response = test_client.patch(
+            f"/api/content/{content_id}",
+            headers=admin_headers,
+            json=payload,
+        )
+        assert response.status_code == 422, response.text
