@@ -230,6 +230,30 @@ def test_resource_chunks_are_persisted_with_citations(monkeypatch):
         assert len(v2_storage_keys)==2
         assert len(set(v2_storage_keys))==2
 
+        # Upload handlers must reject oversized payloads after reading at most
+        # the configured limit plus one byte, rather than buffering arbitrary files.
+        oversized = b"x" * (20 * 1024 * 1024 + 1)
+        legacy_too_large = client.post(
+            f"/api/resources?subject_id={subject_id}&title=TooLarge&resource_type=REFERENCE",
+            headers=headers,
+            files={"file": ("large.txt", oversized, "text/plain")},
+        )
+        assert legacy_too_large.status_code == 413, legacy_too_large.text
+
+        v2_too_large = client.post(
+            f"/api/resources/upload-v2?subject_id={subject_id}&title=TooLarge&resource_type=REFERENCE",
+            headers=headers,
+            files={"file": ("large.txt", oversized, "text/plain")},
+        )
+        assert v2_too_large.status_code == 413, v2_too_large.text
+
+        blank_v2_title = client.post(
+            f"/api/resources/upload-v2?subject_id={subject_id}&title=%20%20%20&resource_type=REFERENCE",
+            headers=headers,
+            files={"file": ("notes.txt", b"small file", "text/plain")},
+        )
+        assert blank_v2_title.status_code == 400, blank_v2_title.text
+
         chunks=client.get(f"/api/resources/{data['id']}/chunks",headers=headers)
         assert chunks.status_code==200,chunks.text
         rows=chunks.json()
