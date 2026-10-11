@@ -3,7 +3,7 @@ import math
 from collections import Counter, defaultdict
 import json, re, uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -26,11 +26,18 @@ class SyllabusCompareRequest(BaseModel):
     topic_names: list[str] = Field(min_length=1, max_length=500)
     source_resource_id: int | None = Field(default=None, ge=1)
 
+    @field_validator("topic_names")
+    @classmethod
+    def validate_topic_name_lengths(cls, value):
+        if any(not name.strip() or len(name) > 200 for name in value):
+            raise ValueError("each topic name must contain 1 to 200 non-whitespace characters")
+        return value
+
 
 class PlanEdit(BaseModel):
     action: str = Field(min_length=1, max_length=30)
     topic_id: int = Field(ge=1)
-    value: float | None = Field(default=None, allow_inf_nan=False)
+    value: float | None = Field(default=None, gt=0, le=1000, allow_inf_nan=False)
     new_week: int | None = Field(default=None, ge=1, le=100)
     note: str | None = Field(default=None, max_length=2000)
 
@@ -737,7 +744,7 @@ def download_artifact(artifact_id: int, db: Session = Depends(get_db), u=Depends
 
 
 @router.post("/ai/ask-v2")
-def ask_v2(subject_id: int, question: str, db: Session = Depends(get_db), u=Depends(current_user)):
+def ask_v2(subject_id: int, question: str = Query(..., min_length=1, max_length=10000), db: Session = Depends(get_db), u=Depends(current_user)):
     if not can_access_subject(db, u, subject_id):
         raise HTTPException(403, "Subject access denied")
     result = grounded_answer(question, approved_contexts(db, subject_id, question))
