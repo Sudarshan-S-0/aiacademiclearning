@@ -26,3 +26,27 @@ def test_audit_endpoints_are_admin_only_and_record_login():
 
         export_denied = client.get("/api/admin/audit-export")
         assert export_denied.status_code == 401
+
+
+
+def test_user_create_schema_trims_names_and_rejects_blank_or_oversized_names():
+    import pytest
+    from pydantic import ValidationError
+    from app.api.routes import UserCreate
+
+    valid = UserCreate(
+        full_name="  Sudarshan S  ",
+        email="sudarshan@example.com",
+        password="StrongPass123",
+        role="STUDENT",
+    )
+    assert valid.full_name == "Sudarshan S"
+
+    for name in ("   ", "x" * 201):
+        with pytest.raises(ValidationError):
+            UserCreate(
+                full_name=name,
+                email="sudarshan@example.com",
+                password="StrongPass123",
+                role="STUDENT",
+            )
